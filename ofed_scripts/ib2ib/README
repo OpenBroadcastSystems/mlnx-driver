@@ -1,0 +1,159 @@
+IB2IB Routers Setup Scripts
+===========================
+Rev 1.0
+
+The bin directory holds 2 scripts that should be used to setup configuration 
+files required to run IB routers connected to multiple subnets. 
+
+To perform this you will need to follow the procedure below:
+
+1. Create a directory where you will collect all subnets data. 
+   We denote it as $d. 
+
+2. Loop over every subnet you are connecting
+
+2.1. Decide what will be the unique index of the subnet in the range 0..31 
+     We denote it $i. E.g. for the first subnet set i=0
+     That will also define the subnet prefix 0xfe80::$i
+
+2.2. Create the directory to hold the config for that subnet
+     mkdir $d/$i
+
+2.3. Obtain the guids file for this subnet. 
+     Login to one of the hosts connected to the subnet, 
+     cd $d/$i.
+     ib2ib_guids
+
+     We assume $d is accessible from all the connected networks. 
+     If it is not correct you can login into a host connected to the subnet
+     run ibnetdiscover into a file: ibnetdiscover > /tmp/ib.net
+     copy that file into $d/$i using scp or other means to the host that
+     has $d mounted.
+     On the host that has $d mounted cd $d/$i; ib2ib_guids -d ib.net
+
+3. Create the configuration files
+   Once you have collected the guids file from all the subnets into
+   $d/0 $d/1 ...
+   cd $d
+   ib2ib_setup
+
+The man pages of the two utilities are included here for bravity:
+
+==============================================================================
+IB2IB_SETUP(1)        User Contributed Perl Documentation       IB2IB_SETUP(1)
+
+TITLE
+       ib2ib_setup: InfiniBand Routers Setup
+
+SYNOPSIS
+       ib2ib_setup [-mvh] [-i/--ip ip-formula-in-perl][-l/--lmc bits]
+
+DESCRIPTION
+       This program scans the local directory for all sub directories of the
+       form 0, 1... 31. Each such directory represents another subnet.  The
+       code looks for a file named guids in each sub directory and then builts
+       several files accordingly.  The guids file should provide guid to host
+       name and port number mapping in each subnet.
+
+       This tool provides for each subnet are:
+
+       guid2lid : mapping guids to lids. Should be copied into each SM
+       dump_files_dir.
+
+       dhcp.db : mappin of IPoIB client-id to IP
+
+       opensm_subn.conf : a fragment of OpenSM configuration file with subnet
+       prefix setting.
+
+       For the entire environment this tool provides the following files:
+
+       hosts : the standard hosts file providing name to IP resolution
+
+       ip2lid.db : providing mapping from IP to GID for all the subnets.
+
+OPTIONS
+       --ip|-i ip-formula-perl
+               A perl formula for how to define the IP for each host.  The
+               provided expression is split by the dots and then each segment
+               is evaluated separatly.  The variables that could be used are:
+
+               $subn = the subnet index
+
+               $lidMod = the lid assigned to the node modulo 256
+
+               $lidDiv = the lid assigned to the node divided by 256
+
+               The default formula is: 12.$subn.$lidDiv.$lidMod
+
+               Example for some different partition. Lets assume each POD
+               contains 100 hosts and the third digit represnts the POD
+               number. Also assuming the 0 digit should be kpet unused.  Also
+               the subnet index should be used with offset of 3.  The formula
+               can then be written as: 12.$subn+3.1+($lid/100).2+($lid % 100)
+
+       --lmc|-l
+               Number of bits of LID allocated to each host. Number of lids
+               per host = 2^lmc.
+
+       --verbose|-v
+               Run in verbose mode
+
+       --help|-h
+               Print a brief help message and exits.
+
+       --man|-m
+               Print a detailed help message (man) and exits.
+
+LICENSE
+       This code is licensed to Mellanox Technologies LTD
+
+Revision
+       $Revision$
+
+AUTHOR
+       Copyright (C) Eitan Zahavi, Mellanox LTD, Feb, 2016 All rights reserved
+
+
+
+perl v5.8.8                       2016-03-05                    IB2IB_SETUP(1)
+
+==============================================================================
+IB2IB_GUIDS(1)        User Contributed Perl Documentation       IB2IB_GUIDS(1)
+
+TITLE
+       ib2ib_guids: Obtain InfiniBand Subnet Names and GUIDs
+
+SYNOPSIS
+       ib2ib_guids [-mvh] [-d/--disc ibnetdiscover-file]
+
+DESCRIPTION
+       This program invokes ibnetdiscover or uses a predefined scan of the
+       network to extract the data about host port names and GUIDs. It then
+       writes out the information into the format required by ib2ib_setup
+       guids file.
+
+OPTIONS
+       --disc|-d ibnetdiscover-file
+               Output of ibnetdiscover
+
+       --verbose|-v
+               Run in verbose mode
+
+       --help|-h
+               Print a brief help message and exits.
+
+       --man|-m
+               Print a detailed help message (man) and exits.
+
+LICENSE
+       This code is licensed to Mellanox Technologies LTD
+
+Revision
+       $Revision$
+
+AUTHOR
+       Copyright (C) Eitan Zahavi, Mellanox LTD, Feb, 2016 All rights reserved
+
+
+
+perl v5.8.8                       2016-03-04                    IB2IB_GUIDS(1)

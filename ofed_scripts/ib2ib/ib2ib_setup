@@ -1,0 +1,331 @@
+eval '(exit $?0)' && 
+	eval 'exec perl -S $0 ${1+"$@"}' && 
+	eval 'exec perl -S $0 $argv:q'
+	if 0;
+
+#############################################################################
+#
+# Eitan Zahavi,Mellanox Technologies LTD
+# Thu Mar  3 04:03:13 2016
+#
+# ib2ib_setup: InfiniBand Routers Setup
+#
+#############################################################################
+
+=head1 TITLE
+
+ib2ib_setup: InfiniBand Routers Setup
+
+=head1 SYNOPSIS
+
+ib2ib_setup [-mvh] [-i/--ip ip-formula-in-perl][-l/--lmc bits]
+
+=head1 DESCRIPTION
+
+This program scans the local directory for all sub directories of the form 
+0, 1... 31. Each such directory represents another subnet. 
+The code looks for a file named guids in each sub directory and 
+then builts several files accordingly. 
+The guids file should provide guid to host name and port number mapping 
+in each subnet.
+
+This tool provides for each subnet are:
+
+guid2lid : mapping guids to lids. Should be copied into each SM dump_files_dir.
+
+dhcp.db : mappin of IPoIB client-id to IP
+
+opensm_subn.conf : a fragment of OpenSM configuration file with subnet
+  prefix setting.
+
+For the entire environment this tool provides the following files:
+
+hosts : the standard hosts file providing name to IP resolution
+
+ip2lid.db : providing mapping from IP to GID for all the subnets.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--ip|-i ip-formula-perl>
+
+A perl formula for how to define the IP for each host. 
+The provided expression is split by the dots and then each segment is evaluated separatly.
+The variables that could be used are:
+
+$subn = the subnet index
+
+$lidMod = the lid assigned to the node modulo 256
+
+$lidDiv = the lid assigned to the node divided by 256
+
+The default formula is: 12.$subn.$lidDiv.$lidMod
+
+Example for some different partition. Lets assume each POD contains 100 hosts and the third 
+digit represnts the POD number. Also assuming the 0 digit should be kpet unused. 
+Also the subnet index should be used with offset of 3.
+The formula can then be written as:
+12.$subn+3.1+($lid/100).2+($lid % 100)
+
+=item B<--lmc|-l>
+
+Number of bits of LID allocated to each host. Number of lids per host = 2^lmc.
+
+=item B<--verbose|-v>
+
+Run in verbose mode
+
+=item B<--help|-h>
+
+Print a brief help message and exits.
+
+=item B<--man|-m>
+
+Print a detailed help message (man) and exits.
+
+=back
+
+=head1 LICENSE
+
+This code is licensed to Mellanox Technologies LTD
+
+=head1 Revision
+
+$Revision$
+
+=head1 AUTHOR
+
+Copyright (C) Eitan Zahavi, Mellanox LTD, Feb, 2016
+All rights reserved
+
+=cut
+
+#############################################################################
+#
+# Commands line parsing
+# 
+
+use vars qw($VERSION);
+
+# use RCS info as we reposit in RCS
+($VERSION) = ('$Revision$' =~ m/(.*)/);
+
+use strict;
+use warnings;
+use diagnostics;
+use Getopt::Long;
+use Pod::Usage;
+
+my $verbose = 0;
+my ($opt_help, $opt_man);
+
+my $opt_i = qw(12.$subn.$lidDiv.$lidMod);
+my $opt_l = 0;
+
+GetOptions(
+    'i|ip=s'    => \$opt_i,
+    'l|lmc=s'   => \$opt_l,
+    'v|verbose' => \$verbose,
+    'h|help'    => \$opt_help,
+    'm|man'     => \$opt_man,
+) or pod2usage(-verbose => 1) && exit;
+
+pod2usage(-verbose => 1) && exit if defined $opt_help;
+pod2usage(-verbose => 2) && exit if defined $opt_man;
+
+# Replace the below with a check for mandatory arguments
+#pod2usage("$0: Missing mandatory arguments.") && exit;
+
+#############################################################################
+#
+# Data Model : list all global variables
+# 
+# Examples:
+# A simple scalar that means ...
+# $simpleScalar;
+#
+# A list of values: @MY_VALUES = ( "a", "b" );
+# @MY_VALUES;
+#
+my $lidDelta = (1 << $opt_l);
+my %SUBN_GUIDS; # a map of maps
+my %SUBN_HOST_PORTS; # a map of maps
+my %SUBN_BY_HOST_PORT;
+my %GUID_BY_HOST_PORT;
+my %LID_BY_HOST_PORT;
+my %GID_BY_HOST_PORT;
+my %IP_BY_HOST_PORT;
+my %HOST_BY_GUID;
+my %PORT_BY_GUID;
+
+#############################################################################
+#
+# Subroutines
+# 
+sub parseGuidsFile {
+    my $subn = shift;
+    my $fileName = "$subn/guids";
+    if (!open(G, "<$fileName")) {
+        print STDERR "-E- Could not open guids file: $fileName\n";
+        exit(1);
+    }
+
+    my $lineNum = 0;
+    my $nGuids = 0;
+    while (my $sLine = <G>) {
+        $lineNum++;
+        if ($sLine =~ m/^(0x[0-9A-Fa-f]{16})\s+(\S+)\s+([0-9]+)$/) {
+            my ($guid, $host, $port )  = ($1,$2,$3);
+            my $host_port = "$host/$port";
+            my $prevHostPort = $SUBN_BY_HOST_PORT{$host_port};
+            if (defined($prevHostPort)) {
+                print STDERR "-W- Ignoring file: $fileName  line: $lineNum ".
+                    "redefinition of host port: $host_port previously defined for subnet: $prevHostPort\n";
+                next;
+            }
+
+            my $prevGuidHost = $HOST_BY_GUID{$guid};
+            my $prevGuidPort = $PORT_BY_GUID{$guid};
+            if (defined($prevGuidHost)) {
+                print STDERR "-W- Ignoring file: $fileName  line: $lineNum ".
+                    "redefinition of guid: $guid previously defined for host: $prevGuidHost port: $prevGuidPort\n";
+                next;
+            }
+            
+            ${$SUBN_GUIDS{$subn}}{$guid} = 1;
+            ${$SUBN_HOST_PORTS{$subn}}{$host_port} = 1;
+            $SUBN_BY_HOST_PORT{$host_port} = $subn;
+            $GUID_BY_HOST_PORT{$host_port} = $guid;
+            $HOST_BY_GUID{$guid} = $host;
+            $PORT_BY_GUID{$guid} = $port;
+            $nGuids++;
+        } elsif ($sLine =~ /^\s*/) {
+            next;
+        } else {
+            print STDERR "-W- Skipping ilegal file: $fileName line: $lineNum\n";
+        }
+    }
+    print "-I- Subnet $subn defined: $nGuids new host ports\n";
+}
+
+sub gidBySubnLid {
+    my ($subn,$lid) = @_;
+
+    my $prefix = sprintf("fec000000000%04x", $subn);
+    my $guid =   sprintf("001405000000%04x", $lid);
+    return "$prefix$guid";
+}
+
+sub ipBySubnLid {
+    my ($subn,$lid) = @_;
+    my @SUBEXP = ($opt_i =~ m/([^.]+)/g);
+    my $lidMod = $lid % 256;
+    my $lidDiv = int($lid / 256);
+    my $d0 = eval($SUBEXP[0]);
+    my $d1 = eval($SUBEXP[1]);
+    my $d2 = eval($SUBEXP[2]);
+    my $d3 = eval($SUBEXP[3]);
+    my $ip = "$d0.$d1.$d2.$d3";
+    return $ip;
+}
+
+sub allocate {
+    # go over all subnets
+    # in each subnet sort the hosts by name and allocate serially
+    foreach my $subn (keys(%SUBN_HOST_PORTS)) {
+        my $lid = $lidDelta;
+        foreach my $host_port (sort(keys(%{$SUBN_HOST_PORTS{$subn}}))) {
+            $LID_BY_HOST_PORT{$host_port} = $lid;
+            my $gid = gidBySubnLid($subn,$lid);
+            $GID_BY_HOST_PORT{$host_port} = $gid;
+            my $ip = ipBySubnLid($subn,$lid);
+            $IP_BY_HOST_PORT{$host_port} = $ip;
+            print "-V- host/port $host_port assign LID: $lid, GID: $gid, IP: $ip\n"
+                if ($verbose);
+
+            $lid += $lidDelta;
+        }
+    }
+}
+
+sub writeGlobalFiles {
+    if (!open(F, ">ip2gid.db")) {
+        print STDERR "-E- Could not write ip2gid.db\n";
+        exit(1);
+    }
+
+    if (!open(H, ">hosts")) {
+        print STDERR "-E- Could not write hosts file\n";
+        exit(1);
+    }
+
+    print F "# this file was generated by ib2ib_setup\n";
+    print H "# this file was generated by ib2ib_setup\n";
+
+    foreach my $subn (keys(%SUBN_HOST_PORTS)) {
+        foreach my $host_port (sort(keys(%{$SUBN_HOST_PORTS{$subn}}))) {
+            my ($host) = ($host_port =~ m/([^\/]*)\//);
+            my $gid = $GID_BY_HOST_PORT{$host_port};
+				$gid =~ s/([0-9a-f]{4})/$1:/g;
+				$gid =~ s/:$//;
+            my $ip = $IP_BY_HOST_PORT{$host_port};
+            print F "$ip\t$gid\n";
+            print H "$ip\t$host\n";
+        }
+    }
+    close(F);
+    close(G);
+}
+
+sub writeSubnFiles {
+    my $subn = shift;
+
+    if (!open(D, ">$subn/dhcp.db")) {
+        print STDERR "-E- Could not write subnet dhcp $subn/dhcp.db\n";
+        exit(1);
+    }
+
+    if (!open(G, ">$subn/guid2lid")) {
+        print STDERR "-E- Could not write subn guid2lid file: $subn/guid2lid\n";
+        exit(1);
+    }
+
+    foreach my $host_port (sort(keys(%{$SUBN_HOST_PORTS{$subn}}))) {
+        my ($host) = ($host_port =~ m/([^\/]*)\//);
+        my $ip = $IP_BY_HOST_PORT{$host_port};
+        my $slid = sprintf("0x%04x", $LID_BY_HOST_PORT{$host_port});
+        my $elid = sprintf("0x%04x", $LID_BY_HOST_PORT{$host_port} + $lidDelta - 1);
+        my $guid = $GUID_BY_HOST_PORT{$host_port};
+        my $gid =  $GID_BY_HOST_PORT{$host_port};
+        $gid =~ s/([0-9a-f][0-9a-f])/$1:/g;
+		  $gid =~ s/:$//;
+        print G "$guid $slid $elid\n\n";
+        
+        print D "host $host_port {\n";
+        print D "   fixed-address $ip;\n";
+        print D "   option dhcp-client-identifier = 20:00:00:00:01:$gid\n"; 
+        print D "}\n";
+    }
+    close(G);
+    close(D);
+}
+
+#############################################################################
+#
+# Main Flow
+# 
+
+for (my $subn = 0; $subn < 32; $subn++) {
+    if (-f "$subn/guids") {
+        parseGuidsFile($subn);
+    }
+}
+
+allocate();
+
+writeGlobalFiles();
+
+foreach my $subn (keys(%SUBN_HOST_PORTS)) {
+    writeSubnFiles($subn);
+}
