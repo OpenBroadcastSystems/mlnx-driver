@@ -1,9 +1,9 @@
-#!/bin/sh
+#!/bin/bash
 
 dist=`lsb_release -s -i | tr '[:upper:]' '[:lower:]'`
 dist_ver=`lsb_release -s -r`
 
-if [ $dist != "ubuntu" ]; then
+if [ "X$dist" != "Xubuntu" ]; then
 	/usr/sbin/update-rc.d mlnx-en.d defaults > /dev/null 2>&1
 fi
 

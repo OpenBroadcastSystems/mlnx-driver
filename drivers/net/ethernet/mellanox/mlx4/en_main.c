@@ -46,17 +46,23 @@
 MODULE_AUTHOR("Liran Liss, Yevgeny Petrilin");
 MODULE_DESCRIPTION("Mellanox ConnectX HCA Ethernet driver");
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_VERSION(DRV_VERSION " ("DRV_RELDATE")");
+MODULE_VERSION(DRV_VERSION);
 
 static const char mlx4_en_version[] =
 	DRV_NAME ": Mellanox ConnectX HCA Ethernet driver v"
-	DRV_VERSION " (" DRV_RELDATE ")\n";
+	DRV_VERSION "\n";
 
 #define MLX4_EN_PARM_INT(X, def_val, desc) \
 	static unsigned int X = def_val;\
 	module_param(X , uint, 0444); \
 	MODULE_PARM_DESC(X, desc);
 
+#ifdef register_netdevice_notifier_rh
+#undef  register_netdevice_notifier
+#undef  unregister_netdevice_notifier
+#define register_netdevice_notifier             register_netdevice_notifier_rh
+#define unregister_netdevice_notifier           unregister_netdevice_notifier_rh
+#endif
 
 /*
  * Device scope module parameters
@@ -127,19 +133,19 @@ void mlx4_en_update_loopback_state(struct net_device *dev,
 		priv->flags |= MLX4_EN_FLAG_ENABLE_HW_LOOPBACK;
 
 	mutex_lock(&priv->mdev->state_lock);
-	if (priv->mdev->dev->caps.flags2 &
-	    MLX4_DEV_CAP_FLAG2_UPDATE_QP_SRC_CHECK_LB &&
-	    priv->rss_map.indir_qp.qpn) {
+	if ((priv->mdev->dev->caps.flags2 &
+	     MLX4_DEV_CAP_FLAG2_UPDATE_QP_SRC_CHECK_LB) &&
+	    priv->rss_map.indir_qp && priv->rss_map.indir_qp->qpn) {
 		int i;
 		int err = 0;
+		int loopback = !!(features & NETIF_F_LOOPBACK);
 
 		for (i = 0; i < priv->rx_ring_num; i++) {
 			int ret;
 
-			ret = mlx4_en_change_mcast_loopback(priv,
-							    &priv->rss_map.qps[i],
-							    !!(features &
-							       NETIF_F_LOOPBACK));
+			ret = mlx4_en_change_mcast_lb(priv,
+						      &priv->rss_map.qps[i],
+						      loopback);
 			if (!err)
 				err = ret;
 		}
@@ -149,17 +155,15 @@ void mlx4_en_update_loopback_state(struct net_device *dev,
 	mutex_unlock(&priv->mdev->state_lock);
 }
 
-static int mlx4_en_get_profile(struct mlx4_en_dev *mdev)
+static void mlx4_en_get_profile(struct mlx4_en_dev *mdev)
 {
 	struct mlx4_en_profile *params = &mdev->profile;
 	int i;
 
 	params->udp_rss = udp_rss;
-#ifdef HAVE_NEW_TX_RING_SCHEME
-	params->num_tx_rings_p_up = mlx4_low_memory_profile() ?
+	params->max_num_tx_rings_p_up = mlx4_low_memory_profile() ?
 		MLX4_EN_MIN_TX_RING_P_UP :
 		min_t(int, num_online_cpus(), MLX4_EN_MAX_TX_RING_P_UP);
-#endif
 
 	if (params->udp_rss && !(mdev->dev->caps.flags
 					& MLX4_DEV_CAP_FLAG_UDP_RSS)) {
@@ -173,25 +177,15 @@ static int mlx4_en_get_profile(struct mlx4_en_dev *mdev)
 		params->prof[i].tx_ppp = pfctx;
 		params->prof[i].tx_ring_size = MLX4_EN_DEF_TX_RING_SIZE;
 		params->prof[i].rx_ring_size = MLX4_EN_DEF_RX_RING_SIZE;
-#ifdef HAVE_NEW_TX_RING_SCHEME
 		params->prof[i].num_up = mdev->dev->caps.force_vlan[i - 1] ?
-					 1 : MLX4_EN_NUM_UP;
-		params->prof[i].num_tx_rings_p_up = params->num_tx_rings_p_up;
-#endif
-#ifdef HAVE_NEW_TX_RING_SCHEME
-		params->prof[i].tx_ring_num = params->prof[i].num_tx_rings_p_up *
-					      params->prof[i].num_up;
-#else
-		params->prof[i].tx_ring_num = MLX4_EN_NUM_TX_RINGS +
-			(!!pfcrx) * MLX4_EN_NUM_PPP_RINGS;
-#endif
-
+					 1 : MLX4_EN_NUM_UP_LOW;
+		params->prof[i].num_tx_rings_p_up = params->max_num_tx_rings_p_up;
+		params->prof[i].tx_ring_num[TX] = params->max_num_tx_rings_p_up *
+			params->prof[i].num_up;
 		params->prof[i].rss_rings = 0;
 		params->prof[i].inline_thold = inline_thold;
 		params->prof[i].inline_scatter_thold = 0;
 	}
-
-	return 0;
 }
 
 static void *mlx4_en_get_netdev(struct mlx4_dev *dev, void *ctx, u8 port)
@@ -325,10 +319,7 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 	}
 
 	/* Build device profile according to supplied module parameters */
-	if (mlx4_en_get_profile(mdev)) {
-		mlx4_err(mdev, "Bad module parameters, aborting\n");
-		goto err_mr;
-	}
+	mlx4_en_get_profile(mdev);
 
 	/* Configure which ports to start according to module parameters */
 	mdev->port_cnt = 0;
@@ -400,6 +391,9 @@ static void mlx4_en_verify_params(void)
 static int __init mlx4_en_init(void)
 {
 	mlx4_en_verify_params();
+#ifdef HAVE_ETHTOOL_xLINKSETTINGS
+	mlx4_en_init_ptys2ethtool_map();
+#endif
 
 	return mlx4_register_interface(&mlx4_en_interface);
 }

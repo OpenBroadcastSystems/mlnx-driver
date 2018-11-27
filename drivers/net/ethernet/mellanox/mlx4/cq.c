@@ -47,7 +47,6 @@
 #define MLX4_CQ_STATUS_OVERFLOW		( 9 << 28)
 #define MLX4_CQ_STATUS_WRITE_FAIL	(10 << 28)
 #define MLX4_CQ_FLAG_CC			( 1 << 18)
-#define MLX4_CQ_FLAG_OI			( 1 << 17)
 #define MLX4_CQ_STATE_ARMED		( 9 <<  8)
 #define MLX4_CQ_STATE_ARMED_SOL		( 6 <<  8)
 #define MLX4_EQ_STATE_FIRED		(10 <<  8)
@@ -69,7 +68,7 @@ void mlx4_cq_tasklet_cb(unsigned long data)
 	list_for_each_entry_safe(mcq, temp, &ctx->process_list, tasklet_ctx.list) {
 		list_del_init(&mcq->tasklet_ctx.list);
 		mcq->tasklet_ctx.comp(mcq);
-		if (atomic_dec_and_test(&mcq->refcount))
+		if (refcount_dec_and_test(&mcq->refcount))
 			complete(&mcq->free);
 		if (time_after(jiffies, end))
 			break;
@@ -81,8 +80,9 @@ void mlx4_cq_tasklet_cb(unsigned long data)
 
 static void mlx4_add_cq_to_tasklet(struct mlx4_cq *cq)
 {
-	unsigned long flags;
 	struct mlx4_eq_tasklet *tasklet_ctx = cq->tasklet_ctx.priv;
+	unsigned long flags;
+	bool kick;
 
 	spin_lock_irqsave(&tasklet_ctx->lock, flags);
 	/* When migrating CQs between EQs will be implemented, please note
@@ -91,8 +91,11 @@ static void mlx4_add_cq_to_tasklet(struct mlx4_cq *cq)
 	 * still arrive.
 	 */
 	if (list_empty_careful(&cq->tasklet_ctx.list)) {
-		atomic_inc(&cq->refcount);
+		refcount_inc(&cq->refcount);
+		kick = list_empty(&tasklet_ctx->list);
 		list_add_tail(&cq->tasklet_ctx.list, &tasklet_ctx->list);
+		if (kick)
+			tasklet_schedule(&tasklet_ctx->task);
 	}
 	spin_unlock_irqrestore(&tasklet_ctx->lock, flags);
 }
@@ -111,6 +114,9 @@ void mlx4_cq_completion(struct mlx4_dev *dev, u32 cqn)
 		return;
 	}
 
+	/* Acessing the CQ outside of rcu_read_lock is safe, because
+	 * the CQ is freed only after interrupt handling is completed.
+	 */
 	++cq->arm_sn;
 
 	cq->comp(cq);
@@ -125,17 +131,15 @@ void mlx4_cq_event(struct mlx4_dev *dev, u32 cqn, int event_type)
 	cq = radix_tree_lookup(&cq_table->tree, cqn & (dev->caps.num_cqs - 1));
 	rcu_read_unlock();
 
-	if (cq) {
-		atomic_inc(&cq->refcount);
-	} else {
-		mlx4_warn(dev, "Async event for bogus CQ %08x\n", cqn);
+	if (!cq) {
+		mlx4_dbg(dev, "Async event for bogus CQ %08x\n", cqn);
 		return;
 	}
 
+	/* Acessing the CQ outside of rcu_read_lock is safe, because
+	 * the CQ is freed only after interrupt handling is completed.
+	 */
 	cq->event(cq, event_type);
-
-	if (atomic_dec_and_test(&cq->refcount))
-		complete(&cq->free);
 }
 
 static int mlx4_SW2HW_CQ(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox,
@@ -209,28 +213,6 @@ int mlx4_cq_resize(struct mlx4_dev *dev, struct mlx4_cq *cq,
 }
 EXPORT_SYMBOL_GPL(mlx4_cq_resize);
 
-int mlx4_cq_ignore_overrun(struct mlx4_dev *dev, struct mlx4_cq *cq)
-{
-	struct mlx4_cmd_mailbox *mailbox;
-	struct mlx4_cq_context *cq_context;
-	int err;
-
-	mailbox = mlx4_alloc_cmd_mailbox(dev);
-	if (IS_ERR(mailbox))
-		return PTR_ERR(mailbox);
-
-	cq_context = mailbox->buf;
-	memset(cq_context, 0, sizeof *cq_context);
-
-	cq_context->flags |= cpu_to_be32(MLX4_CQ_FLAG_OI);
-
-	err = mlx4_MODIFY_CQ(dev, mailbox, cq->cqn, 3);
-
-	mlx4_free_cmd_mailbox(dev, mailbox);
-	return err;
-}
-EXPORT_SYMBOL_GPL(mlx4_cq_ignore_overrun);
-
 int __mlx4_cq_alloc_icm(struct mlx4_dev *dev, int *cqn)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -241,11 +223,19 @@ int __mlx4_cq_alloc_icm(struct mlx4_dev *dev, int *cqn)
 	if (*cqn == -1)
 		return -ENOMEM;
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	err = mlx4_table_get(dev, &cq_table->table, *cqn);
+#else
 	err = mlx4_table_get(dev, &cq_table->table, *cqn, GFP_KERNEL);
+#endif
 	if (err)
 		goto err_out;
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	err = mlx4_table_get(dev, &cq_table->cmpt_table, *cqn);
+#else
 	err = mlx4_table_get(dev, &cq_table->cmpt_table, *cqn, GFP_KERNEL);
+#endif
 	if (err)
 		goto err_put;
 	return 0;
@@ -258,13 +248,14 @@ err_out:
 	return err;
 }
 
-static int mlx4_cq_alloc_icm(struct mlx4_dev *dev, int *cqn)
+static int mlx4_cq_alloc_icm(struct mlx4_dev *dev, int *cqn, u8 usage)
 {
+	u32 in_modifier = RES_CQ | (((u32)usage & 3) << 30);
 	u64 out_param;
 	int err;
 
 	if (mlx4_is_mfunc(dev)) {
-		err = mlx4_cmd_imm(dev, 0, &out_param, RES_CQ,
+		err = mlx4_cmd_imm(dev, 0, &out_param, in_modifier,
 				   RES_OP_RESERVE_AND_MAP, MLX4_CMD_ALLOC_RES,
 				   MLX4_CMD_TIME_CLASS_A, MLX4_CMD_WRAPPED);
 		if (err)
@@ -349,7 +340,7 @@ static void mlx4_init_kernel_cqes(struct mlx4_buf *buf,
 {
 	int i;
 
-	if (BITS_PER_LONG == 64 || buf->nbufs == 1)
+	if (buf->nbufs == 1)
 		memset(buf->direct.buf, 0xcc, entries * cqe_size);
 	else
 		for (i = 0; i < buf->npages; i++)
@@ -374,7 +365,7 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent,
 
 	cq->vector = vector;
 
-	err = mlx4_cq_alloc_icm(dev, &cq->cqn);
+	err = mlx4_cq_alloc_icm(dev, &cq->cqn, cq->usage);
 	if (err)
 		return err;
 
@@ -395,8 +386,9 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent,
 	if (timestamp_en)
 		cq_context->flags  |= cpu_to_be32(1 << 19);
 
-	cq_context->logsize_usrpage = cpu_to_be32((ilog2(nent) << 24)
-			| (mlx4_to_hw_uar_index(dev, uar->index)));
+	cq_context->logsize_usrpage =
+		cpu_to_be32((ilog2(nent) << 24) |
+			    mlx4_to_hw_uar_index(dev, uar->index));
 	cq_context->comp_eqn	    = priv->eq_table.eq[MLX4_CQ_TO_EQ_VECTOR(vector)].eqn;
 	cq_context->log_page_size   = mtt->page_shift - MLX4_ICM_PAGE_SHIFT;
 
@@ -429,15 +421,13 @@ int mlx4_cq_alloc(struct mlx4_dev *dev, int nent,
 	cq->cons_index = 0;
 	cq->arm_sn     = 1;
 	cq->uar        = uar;
-	cq->eqn = priv->eq_table.eq[cq->vector].eqn;
-	cq->irq = priv->eq_table.eq[cq->vector].irq;
-
-	atomic_set(&cq->refcount, 1);
+	refcount_set(&cq->refcount, 1);
 	init_completion(&cq->free);
 	cq->comp = mlx4_add_cq_to_tasklet;
 	cq->tasklet_ctx.priv =
 		&priv->eq_table.eq[MLX4_CQ_TO_EQ_VECTOR(vector)].tasklet_ctx;
 	INIT_LIST_HEAD(&cq->tasklet_ctx.list);
+
 
 	cq->irq = priv->eq_table.eq[MLX4_CQ_TO_EQ_VECTOR(vector)].irq;
 	return 0;
@@ -469,12 +459,11 @@ void mlx4_cq_free(struct mlx4_dev *dev, struct mlx4_cq *cq)
 	spin_unlock(&cq_table->lock);
 
 	synchronize_irq(priv->eq_table.eq[MLX4_CQ_TO_EQ_VECTOR(cq->vector)].irq);
-	/* synchronize ASYNC irq */
 	if (priv->eq_table.eq[MLX4_CQ_TO_EQ_VECTOR(cq->vector)].irq !=
 	    priv->eq_table.eq[MLX4_EQ_ASYNC].irq)
 		synchronize_irq(priv->eq_table.eq[MLX4_EQ_ASYNC].irq);
 
-	if (atomic_dec_and_test(&cq->refcount))
+	if (refcount_dec_and_test(&cq->refcount))
 		complete(&cq->free);
 	wait_for_completion(&cq->free);
 
@@ -507,3 +496,4 @@ void mlx4_cleanup_cq_table(struct mlx4_dev *dev)
 	/* Nothing to do to clean up radix_tree */
 	mlx4_bitmap_cleanup(&mlx4_priv(dev)->cq_table.bitmap);
 }
+

@@ -51,7 +51,17 @@
 #define SPEED_25000 25000
 #define SPEED_50000 50000
 #define SPEED_100000 100000
-/*TODO Ethtool new SPEED API */
+#define ETHTOOL_LINK_MODE_25000baseCR_Full_BIT 31
+#define ETHTOOL_LINK_MODE_25000baseKR_Full_BIT 32
+#define ETHTOOL_LINK_MODE_25000baseSR_Full_BIT 33
+#define ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT 34
+#define ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT 35
+#define ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT 36
+#define ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT 37
+#define ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT 38
+#define ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT 39
+#define ETHTOOL_LINK_MODE_50000baseSR2_Full_BIT 40
+
 #define SUPPORTED_100000baseCR4_Full 0
 #define ADVERTISED_100000baseCR4_Full 0
 #define SUPPORTED_100000baseSR4_Full 0
@@ -99,6 +109,14 @@
 
 #ifndef ETHER_FLOW
 #define ETHER_FLOW      0x12    /* spec only (ether_spec) */
+#endif
+
+#ifndef SPEED_5000
+#define SPEED_5000	5000
+#endif
+
+#ifndef SPEED_14000
+#define SPEED_14000	14000
 #endif
 
 #endif

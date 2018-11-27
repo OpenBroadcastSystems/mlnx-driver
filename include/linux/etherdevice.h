@@ -1,7 +1,21 @@
 #ifndef LINUX_ETHERDEVICE_H
 #define LINUX_ETHERDEVICE_H
 
+#include "../../compat/config.h"
+
 #include_next <linux/etherdevice.h>
+
+#ifndef HAVE_ETH_RANDOM_ADDR
+#undef random_ether_addr
+static inline void eth_random_addr(u8 *addr)
+{
+	get_random_bytes(addr, ETH_ALEN);
+	addr[0] &= 0xfe;	/* clear multicast bit */
+	addr[1] |= 0x02;	/* set local assignment bit (IEEE802) */
+}
+
+#define random_ether_addr(addr) eth_random_addr(addr)
+#endif
 
 #ifndef HAVE_ETHER_ADDR_COPY
 /**

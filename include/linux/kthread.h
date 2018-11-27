@@ -12,6 +12,7 @@
 #define BACKPORT_LINUX_KTHREAD_H
 
 #include <linux/version.h>
+#include "../../compat/config.h"
 
 #include_next <linux/kthread.h>
 

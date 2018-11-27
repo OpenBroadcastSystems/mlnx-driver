@@ -29,11 +29,30 @@
 #
 
 DEVICE=mlx4_0
+PORT=1
 MODE=0
-while getopts "d:m:" arg; do
+
+usage="Set/Show RoCE mode of RDMA_CM applications
+
+Usage:
+	cma_roce_mode
+Options:
+ -d <dev>        use IB device <dev> (default mlx4_0)
+ -p <port>       use port <port> of IB device (default 1)
+ -m <roce_mode>  set RoCE mode of RDMA_CM applications (default 1)"
+
+
+while getopts "d:m:hp:" arg; do
 case $arg in
+		h)
+		echo "$usage"
+		exit
+		;;
 		d)
 		DEVICE=$OPTARG
+		;;
+		p)
+		PORT=$OPTARG
 		;;
 		m)
 		MODE=$OPTARG
@@ -77,19 +96,22 @@ if [ ! -d $DEVICE ] ; then
 	fi
 fi
 
-cd $DEVICE
+if [ ! -d $DEVICE/ports/$PORT ] ; then
+	echo device $DEVICE port $PORT does not exist
+	exit 1
+fi
+
+cd $DEVICE/ports/$PORT
 
 if [ $MODE -eq 1 ] ; then
-	echo "IB/RoCE V1" |sudo tee default_roce_mode
+	echo "IB/RoCE v1" |sudo tee default_roce_mode
 elif [ $MODE -eq 2 ] ; then
-	echo "RoCE V2" |sudo tee default_roce_mode
-elif [ $MODE -eq 3 ] ; then
-	echo "RoCE V1.5"|sudo tee default_roce_mode
+	echo "RoCE v2" |sudo tee default_roce_mode
 else
 	cat default_roce_mode
 fi
 
-cd ..
+cd ../../..
 
 sudo rmdir $DEVICE
 

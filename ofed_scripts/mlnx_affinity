@@ -1,15 +1,51 @@
 #!/bin/bash
 # mlnx_affinity, version 2.0
 # This version is supported in MLNX_OFED-2.0.x driver verions only 
+#
+#
+# Copyright (c) 2017 Mellanox Technologies. All rights reserved.
+#
+# This Software is licensed under one of the following licenses:
+#
+# 1) under the terms of the "Common Public License 1.0" a copy of which is
+#    available from the Open Source Initiative, see
+#    http://www.opensource.org/licenses/cpl.php.
+#
+# 2) under the terms of the "The BSD License" a copy of which is
+#    available from the Open Source Initiative, see
+#    http://www.opensource.org/licenses/bsd-license.php.
+#
+# 3) under the terms of the "GNU General Public License (GPL) Version 2" a
+#    copy of which is available from the Open Source Initiative, see
+#    http://www.opensource.org/licenses/gpl-license.php.
+#
+# Licensee has the right to choose one of the above licenses.
+#
+# Redistributions of source code must retain the above copyright
+# notice and one of the license notices.
+#
+# Redistributions in binary form must reproduce both the above copyright
+# notice, one of the license notices in the documentation
+# and/or other materials provided with the distribution.
+#
 
 ACTION=$1
 ISSUE=$(cat /etc/issue | head -1)
+IRQBALANCER=""
 if [[ "$(echo $ISSUE | grep -i ubuntu)" != "" || "$(echo $ISSUE | grep -i debian)" != "" ]]; then
 	echo "INFO - This utility does not support irqbalance control in $ISSUE"
 	echo "INFO - irqbalance status will not change"
-	IRQBALANCER=""
 else
-	IRQBALANCER=$( /sbin/chkconfig --list | grep irq | grep balance | cut -d " " -f 1 )
+	if [[ -f /bin/systemctl ]]; then
+		IRQBALANCER=$( /bin/systemctl list-unit-files --type=service 2>/dev/null | grep irq | grep balance | cut -d " " -f 1 )
+	fi
+	if [[ -z "$IRQBALANCER" && -f /sbin/chkconfig ]]; then
+		IRQBALANCER=$( /sbin/chkconfig --list 2>/dev/null | grep irq | grep balance | cut -d " " -f 1 )
+	fi
+	if [[ -z "$IRQBALANCER" ]]; then
+		echo "INFO - irqbalancer not found"
+		echo "INFO - irqbalance status will not change"
+	fi
 fi
 LSCPU_CMD="cat /proc/cpuinfo"
 IBDEV2NETDEV="ibdev2netdev"

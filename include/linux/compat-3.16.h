@@ -22,11 +22,6 @@ int cpumask_set_cpu_local_first(int i, int numa_node, cpumask_t *dstp);
 
 #include <linux/ktime.h>
 
-static inline u64 ktime_get_ns(void)
-{
-	return ktime_to_ns(ktime_get());
-}
-
 #ifndef smp_mb__after_atomic
 #define smp_mb__after_atomic()	smp_mb()
 #endif

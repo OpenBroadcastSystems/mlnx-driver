@@ -36,12 +36,19 @@
 #include <rdma/ib_umem.h>
 #include <rdma/ib_verbs.h>
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+#ifdef HAVE_INTERVAL_TREE_GENERIC_H
 #include <linux/interval_tree.h>
+#endif
+#endif
+#include <rdma/ib_umem_odp_exp.h>
 
+#ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+#ifdef HAVE_INTERVAL_TREE_GENERIC_H
 struct umem_odp_node {
 	u64 __subtree_last;
 	struct rb_node rb;
 };
+#endif
 #endif
 
 struct ib_umem_odp {
@@ -75,6 +82,7 @@ struct ib_umem_odp {
 	 * counters yet. */
 	struct list_head no_private_counters;
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+#ifdef HAVE_INTERVAL_TREE_GENERIC_H
 	struct ib_umem		*umem;
 
 	/* Tree tracking */
@@ -82,21 +90,23 @@ struct ib_umem_odp {
 
 	struct completion	notifier_completion;
 	int			dying;
-#endif
+	struct work_struct	work;
+#endif /* HAVE_INTERVAL_TREE_GENERIC_H */
+#endif /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 };
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+#ifdef HAVE_INTERVAL_TREE_GENERIC_H
 
-enum ib_odp_dma_map_flags {
-	IB_ODP_DMA_MAP_FOR_PREFETCH	= 1 << 0,
-};
-
-int ib_umem_odp_get(struct ib_ucontext *context, struct ib_umem *umem);
+int ib_umem_odp_get(struct ib_ucontext *context, struct ib_umem *umem,
+		    int access);
+struct ib_umem *ib_alloc_odp_umem(struct ib_ucontext *context,
+				  unsigned long addr,
+				  size_t size);
 
 void ib_umem_odp_release(struct ib_umem *umem);
 
-int ib_umem_odp_add_statistic_nodes(struct device *dev);
-
+#endif /* HAVE_INTERVAL_TREE_GENERIC_H */
 /*
  * The lower 2 bits of the DMA address signal the R/W permissions for
  * the entry. To upgrade the permissions, provide the appropriate
@@ -112,41 +122,36 @@ int ib_umem_odp_add_statistic_nodes(struct device *dev);
 
 int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 start_offset, u64 bcnt,
 			      u64 access_mask, unsigned long current_seq,
-			      enum ib_odp_dma_map_flags flags);
+			      enum ib_odp_dma_map_flags flags,
+			      int *num_pages);
 
 void ib_umem_odp_unmap_dma_pages(struct ib_umem *umem, u64 start_offset,
-				 u64 bound);
+				 u64 bound, int *num_pages);
 
-void rbt_ib_umem_insert(struct umem_odp_node *node, struct rb_root *root);
-void rbt_ib_umem_remove(struct umem_odp_node *node, struct rb_root *root);
 typedef int (*umem_call_back)(struct ib_umem *item, u64 start, u64 end,
 			      void *cookie);
 /*
  * Call the callback on each ib_umem in the range. Returns the logical or of
  * the return values of the functions called.
  */
-int rbt_ib_umem_for_each_in_range(struct rb_root *root, u64 start, u64 end,
+#ifndef HAVE_INTERVAL_TREE_TAKES_RB_ROOT
+int rbt_ib_umem_for_each_in_range(struct rb_root_cached *root,
+#else
+int rbt_ib_umem_for_each_in_range(struct rb_root *root,
+#endif
+				  u64 start, u64 end,
 				  umem_call_back cb, void *cookie);
 
-struct umem_odp_node *rbt_ib_umem_iter_first(struct rb_root *root,
-					     u64 start, u64 last);
-struct umem_odp_node *rbt_ib_umem_iter_next(struct umem_odp_node *node,
-					    u64 start, u64 last);
-
-static inline void ib_umem_odp_account_fault_handled(struct ib_device *dev)
-{
-	atomic_inc(&dev->odp_statistics.num_page_faults);
-}
-
-static inline void ib_umem_odp_account_prefetch_handled(struct ib_device *dev)
-{
-	atomic_inc(&dev->odp_statistics.num_prefetches_handled);
-}
-
-static inline void ib_umem_odp_account_invalidations_fault_contentions(struct ib_device *dev)
-{
-	atomic_inc(&dev->odp_statistics.invalidations_faults_contentions);
-}
+/*
+ * Find first region intersecting with address range.
+ * Return NULL if not found
+ */
+#ifndef HAVE_INTERVAL_TREE_TAKES_RB_ROOT
+struct ib_umem_odp *rbt_ib_umem_lookup(struct rb_root_cached *root,
+#else
+struct ib_umem_odp *rbt_ib_umem_lookup(struct rb_root *root,
+#endif
+				       u64 addr, u64 length);
 
 static inline int ib_umem_mmu_notifier_retry(struct ib_umem *item,
 					     unsigned long mmu_seq)
@@ -180,17 +185,20 @@ static inline int ib_umem_mmu_notifier_retry(struct ib_umem *item,
 #else /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 
 static inline int ib_umem_odp_get(struct ib_ucontext *context,
-				  struct ib_umem *umem)
+				  struct ib_umem *umem,
+				  int access)
 {
 	return -EINVAL;
 }
 
-static inline void ib_umem_odp_release(struct ib_umem *umem) {}
-
-static inline int ib_umem_odp_add_statistic_nodes(struct device *dev)
+static inline struct ib_umem *ib_alloc_odp_umem(struct ib_ucontext *context,
+						unsigned long addr,
+						size_t size)
 {
-	return 0;
+	return ERR_PTR(-EINVAL);
 }
+
+static inline void ib_umem_odp_release(struct ib_umem *umem) {}
 
 #endif /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 

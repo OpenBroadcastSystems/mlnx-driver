@@ -32,19 +32,19 @@ cd ${0%*/*}
 kernelver=${kernelver:-`uname -r`}
 kernel_source_dir=${kernel_source_dir:-"/lib/modules/$kernelver/build"}
 PACKAGE_NAME=${PACKAGE_NAME:-"mlnx-ofed-kernel"}
-PACKAGE_VERSION=${PACKAGE_VERSION:-"3.0"}
+PACKAGE_VERSION=${PACKAGE_VERSION:-"@VERSION@"}
 
 echo STRIP_MODS=\${STRIP_MODS:-"yes"}
 echo kernelver=\${kernelver:-\$\(uname -r\)}
 echo kernel_source_dir=\${kernel_source_dir:-"/lib/modules/\$kernelver/build"}
 
-modules=`./dkms_ofed $kernelver get-modules`
+modules=`./dkms_ofed $kernelver $kernel_source_dir get-modules`
 
 i=0
 
 for module in $modules
 do
-	name=`echo ${module##*/} | sed -e "s/.ko//"`
+	name=`echo ${module##*/} | sed -e "s/.ko.gz//" -e "s/.ko//"`
 	echo BUILT_MODULE_NAME[$i]=$name
 	echo BUILT_MODULE_LOCATION[$i]=${module%*/*}
 	echo DEST_MODULE_NAME[$i]=$name
@@ -52,6 +52,11 @@ do
 	echo STRIP[$i]="\$STRIP_MODS"
 	let i++
 done
+
+# W/A for --with-innova-ipsec flag opens features (not adding new module)
+if (echo "$configure_options" | grep -q "with-innova-ipsec" 2>/dev/null); then
+	echo '#--with-innova-ipsec'
+fi
 
 echo MAKE=\"./ofed_scripts/pre_build.sh \$kernelver \$kernel_source_dir $PACKAGE_NAME $PACKAGE_VERSION\"
 echo CLEAN=\"make clean\"
@@ -61,7 +66,6 @@ echo REMAKE_INITRD=yes
 echo AUTOINSTALL=yes
 # W/A for DKMS parallel build on kernel update which causes ULP build to fail
 echo POST_INSTALL=\"ofed_scripts/dkms_build_ulps.sh \$kernelver\"
-
 
 #       POST_ADD=
 #              The name of the script to be run after an add is performed.  The path should be given relative to the root directory of your source.

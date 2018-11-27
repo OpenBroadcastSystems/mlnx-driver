@@ -1,9 +1,15 @@
-#if defined(CONFIG_COMPAT_RHEL_7_2) || defined(CONFIG_COMPAT_SLES_12)
+#ifndef _COMPAT_TARGET_ISCSI_ISCSI_TRANSPORT_H
+#define _COMPAT_TARGET_ISCSI_ISCSI_TRANSPORT_H 1
+
+#include "../../../compat/config.h"
+
+#ifdef HAVE_ISCSI_TARGET_CORE_ISCSI_TARGET_STAT_H
 #include_next <target/iscsi/iscsi_transport.h>
 #else
+
 #include <linux/module.h>
 #include <linux/list.h>
-#include "../../../drivers/target/iscsi/iscsi_target_core.h"
+#include "iscsi_target_core.h"
 
 struct iscsit_transport {
 #define ISCSIT_TRANSPORT_NAME	16
@@ -19,9 +25,9 @@ struct iscsit_transport {
 	void (*iscsit_free_np)(struct iscsi_np *);
 #if defined(CONFIG_COMPAT_ISCSIT_WAIT_CONN)
 	void (*iscsit_wait_conn)(struct iscsi_conn *);
-#endif /* CONFIG_COMPAT_ISCSIT_WAIT_CONN */
+#endif
 	void (*iscsit_free_conn)(struct iscsi_conn *);
-#if !defined(CONFIG_COMPAT_ISCSIT_PRIV_CMD) && (LINUX_VERSION_CODE < KERNEL_VERSION(3,12,0))
+#if !defined(CONFIG_COMPAT_RHEL_7_2) && (LINUX_VERSION_CODE < KERNEL_VERSION(3,12,0))
 	struct iscsi_cmd *(*iscsit_alloc_cmd)(struct iscsi_conn *, gfp_t);
 #endif
 	int (*iscsit_get_login_rx)(struct iscsi_conn *, struct iscsi_login *);
@@ -31,15 +37,11 @@ struct iscsit_transport {
 	int (*iscsit_get_dataout)(struct iscsi_conn *, struct iscsi_cmd *, bool);
 	int (*iscsit_queue_data_in)(struct iscsi_conn *, struct iscsi_cmd *);
 	int (*iscsit_queue_status)(struct iscsi_conn *, struct iscsi_cmd *);
-#if defined(CONFIG_COMPAT_ISCSIT_ABORTED_TASK)
 	void (*iscsit_aborted_task)(struct iscsi_conn *, struct iscsi_cmd *);
-#endif
-#if defined(CONFIG_COMPAT_ISCSIT_GET_SUP_PROT_OPS)
 	enum target_prot_op (*iscsit_get_sup_prot_ops)(struct iscsi_conn *);
-#endif
 };
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0))
+#if defined(CONFIG_COMPAT_RHEL_7_2) || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0))
 static inline void *iscsit_priv_cmd(struct iscsi_cmd *cmd)
 {
 	return (void *)(cmd + 1);
@@ -58,10 +60,6 @@ extern void iscsit_put_transport(struct iscsit_transport *);
 /*
  * From iscsi_target.c
  */
-#if !defined(CONFIG_COMPAT_FBK_16) && (LINUX_VERSION_CODE < KERNEL_VERSION(3,11,0))
-extern int iscsit_add_reject_from_cmd(u8, int, int, unsigned char *,
-				struct iscsi_cmd *);
-#endif
 extern int iscsit_setup_scsi_cmd(struct iscsi_conn *, struct iscsi_cmd *,
 				unsigned char *);
 extern void iscsit_set_unsoliticed_dataout(struct iscsi_cmd *);
@@ -73,9 +71,8 @@ extern int iscsit_check_dataout_payload(struct iscsi_cmd *, struct iscsi_data *,
 				bool);
 #if !defined(CONFIG_COMPAT_RHEL_7_1) && (LINUX_VERSION_CODE < KERNEL_VERSION(3,11,0))
 extern int iscsit_handle_nop_out(struct iscsi_conn *, struct iscsi_cmd *,
-				unsigned char *);
-#endif
-#if defined(CONFIG_COMPAT_RHEL_7_1) || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,11,0))
+                               unsigned char *);
+#else
 extern int iscsit_setup_nop_out(struct iscsi_conn *, struct iscsi_cmd *,
 				struct iscsi_nopout *);
 extern int iscsit_process_nop_out(struct iscsi_conn *, struct iscsi_cmd *,
@@ -131,9 +128,9 @@ extern int iscsit_tmr_post_handler(struct iscsi_cmd *, struct iscsi_conn *);
 extern struct iscsi_cmd *iscsit_allocate_cmd(struct iscsi_conn *, int);
 extern int iscsit_sequence_cmd(struct iscsi_conn *, struct iscsi_cmd *,
 			       unsigned char *, __be32);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0))
+#if defined(CONFIG_COMPAT_RHEL_7_2) || (LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0))
 extern void iscsit_release_cmd(struct iscsi_cmd *);
 #endif
+#endif /* HAVE_ISCSI_TARGET_CORE_ISCSI_TARGET_STAT_H */
 
-#endif /* RH7.2 SLES12 */
-
+#endif	/* _COMPAT_TARGET_ISCSI_ISCSI_TRANSPORT_H */

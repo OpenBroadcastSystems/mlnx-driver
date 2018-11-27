@@ -158,7 +158,7 @@ static int mlx4_reset_slave(struct mlx4_dev *dev)
 	return -ETIMEDOUT;
 }
 
-static int mlx4_comm_internal_err(u32 slave_read)
+int mlx4_comm_internal_err(u32 slave_read)
 {
 	return (u32)COMM_CHAN_EVENT_INTERNAL_ERR ==
 		(slave_read & (u32)COMM_CHAN_EVENT_INTERNAL_ERR) ? 1 : 0;
@@ -178,20 +178,22 @@ void mlx4_enter_error_state(struct mlx4_dev_persistent *persist)
 
 	dev = persist->dev;
 	mlx4_err(dev, "device is going to be reset\n");
-	if (mlx4_is_slave(dev))
+	if (mlx4_is_slave(dev)) {
 		err = mlx4_reset_slave(dev);
-	else
+	} else {
+		mlx4_crdump_collect(dev);
 		err = mlx4_reset_master(dev);
+	}
 
-	if (!err)
+	if (!err) {
 		mlx4_err(dev, "device was reset successfully\n");
-	else
+	} else {
 		/* EEH could have disabled the PCI channel during reset. That's
 		 * recoverable and the PCI error flow will handle it.
 		 */
 		if (!pci_channel_offline(dev->persist->pdev))
 			BUG_ON(1);
-
+	}
 	dev->persist->state |= MLX4_DEVICE_STATE_INTERNAL_ERROR;
 	mutex_unlock(&persist->device_state_mutex);
 
@@ -231,10 +233,19 @@ static void dump_err_buf(struct mlx4_dev *dev)
 			 i, swab32(readl(priv->catas_err.map + i)));
 }
 
+#ifdef HAVE_TIMER_SETUP
+static void poll_catas(struct timer_list *t)
+#else
 static void poll_catas(unsigned long dev_ptr)
+#endif
 {
+#ifdef HAVE_TIMER_SETUP
+	struct mlx4_priv *priv = from_timer(priv, t, catas_err.timer);
+	struct mlx4_dev *dev = &priv->dev;
+#else
 	struct mlx4_dev *dev = (struct mlx4_dev *) dev_ptr;
 	struct mlx4_priv *priv = mlx4_priv(dev);
+#endif
 	u32 slave_read;
 
 	if (mlx4_is_slave(dev)) {
@@ -277,7 +288,11 @@ void mlx4_start_catas_poll(struct mlx4_dev *dev)
 	phys_addr_t addr;
 
 	INIT_LIST_HEAD(&priv->catas_err.list);
+#ifdef HAVE_TIMER_SETUP
+	timer_setup(&priv->catas_err.timer, poll_catas, 0);
+#else
 	init_timer(&priv->catas_err.timer);
+#endif
 	priv->catas_err.map = NULL;
 
 	if (!mlx4_is_slave(dev)) {
@@ -293,8 +308,10 @@ void mlx4_start_catas_poll(struct mlx4_dev *dev)
 		}
 	}
 
+#ifndef HAVE_TIMER_SETUP
 	priv->catas_err.timer.data     = (unsigned long) dev;
 	priv->catas_err.timer.function = poll_catas;
+#endif
 	priv->catas_err.timer.expires  =
 		round_jiffies(jiffies + MLX4_CATAS_POLL_INTERVAL);
 	add_timer(&priv->catas_err.timer);

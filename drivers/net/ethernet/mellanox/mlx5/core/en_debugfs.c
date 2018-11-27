@@ -50,10 +50,10 @@ static void mlx5e_create_channel_debugfs(struct mlx5e_priv *priv,
 			   priv->netdev->name);
 		return;
 	}
-	priv->channel[channel_num]->dfs_root = channel_root;
-	channel = priv->channel[channel_num];
+	priv->channels.c[channel_num]->dfs_root = channel_root;
+	channel = priv->channels.c[channel_num];
 
-	for (i = 0; i < priv->params.num_tc; i++) {
+	for (i = 0; i < priv->channels.params.num_tc; i++) {
 		snprintf(name, MLX5_MAX_NAME_LEN, "sqn-%d", i);
 		debugfs_create_u32(name, S_IRUSR, channel_root,
 				   &channel->sq[i].sqn);
@@ -82,35 +82,35 @@ void mlx5e_create_debugfs(struct mlx5e_priv *priv)
 		return;
 	}
 
-	debugfs_create_u32("uar", S_IRUSR, priv->dfs_root,
-			   &priv->cq_uar.index);
-	debugfs_create_u32("pdn", S_IRUSR, priv->dfs_root, &priv->pdn);
-	debugfs_create_u32("mkey", S_IRUSR, priv->dfs_root,
-			   &priv->mr.key);
 	debugfs_create_u8("num_tc", S_IRUSR, priv->dfs_root,
-			  &priv->params.num_tc);
+			  &priv->channels.params.num_tc);
 
-	for (i = 0; i < priv->params.num_tc; i++) {
+	for (i = 0; i < priv->channels.params.num_tc; i++) {
 		snprintf(name, MLX5_MAX_NAME_LEN, "tisn-%d", i);
 		debugfs_create_u32(name, S_IRUSR, priv->dfs_root,
 				   &priv->tisn[i]);
 	}
 
-	for (i = 0; i < MLX5E_NUM_TT; i++) {
-		snprintf(name, MLX5_MAX_NAME_LEN, "outer_tirn-%d", i);
+	for (i = 0; i < MLX5E_NUM_INDIR_TIRS; i++) {
+		snprintf(name, MLX5_MAX_NAME_LEN, "indir-tirn-%d", i);
 		debugfs_create_u32(name, S_IRUSR, priv->dfs_root,
-				   &priv->outer_tirn[i]);
+				   &priv->indir_tir[i].tirn);
+
+		if (!mlx5e_tunnel_inner_ft_supported(priv->mdev))
+			continue;
+
+		snprintf(name, MLX5_MAX_NAME_LEN, "inner_indir-tirn-%d", i);
+		debugfs_create_u32(name, S_IRUSR, priv->dfs_root,
+				   &priv->inner_indir_tir[i].tirn);
 	}
 
-	if (mlx5e_tunnel_stateless_supported(priv->mdev)) {
-		for (i = 0; i < MLX5E_NUM_TT; i++) {
-			snprintf(name, MLX5_MAX_NAME_LEN, "inner_tirn-%d", i);
-			debugfs_create_u32(name, S_IRUSR, priv->dfs_root,
-					   &priv->inner_tirn[i]);
-		}
+	for (i = 0; i < MLX5E_MAX_NUM_CHANNELS; i++) {
+		snprintf(name, MLX5_MAX_NAME_LEN, "dir-tirn-%d", i);
+		debugfs_create_u32(name, S_IRUSR, priv->dfs_root,
+				   &priv->direct_tir[i].tirn);
 	}
 
-	for (i = 0; i < priv->params.num_channels; i++)
+	for (i = 0; i < priv->channels.num; i++)
 		mlx5e_create_channel_debugfs(priv, i);
 }
 

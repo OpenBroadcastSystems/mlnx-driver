@@ -7,7 +7,7 @@ echo_err()
 	echo -e "$@" 1>&2
 }
 
-regEx="(initialization from incompatible pointer type|assignment from incompatible pointer type|declared inside parameter list)"
+regEx="(from incompatible pointer type|declared inside parameter list|is deprecated|expects argument of type|discards .const. qualifier|but argument is of type|discards qualifiers from pointer target type)"
 
 cat $log_file 1>&2
 

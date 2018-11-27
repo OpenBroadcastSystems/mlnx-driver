@@ -6,6 +6,12 @@ Copyright 2007        Johannes Berg <johannes@sipsolutions.net>
 GPLv2+; See copying for details.
 '''
 
+import sys
+import os
+if os.path.exists('/usr/share/pyshared'):
+    sys.path.append('/usr/share/pyshared')
+if os.path.exists('/usr/lib/python2.7/site-packages'):
+    sys.path.append('/usr/lib/python2.7/site-packages')
 import struct
 from netlink import NLM_F_REQUEST, NLMSG_MIN_TYPE, Message, parse_attributes
 from netlink import NulStrAttr, Connection, NETLINK_GENERIC

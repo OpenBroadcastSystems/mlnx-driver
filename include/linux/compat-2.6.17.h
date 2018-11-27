@@ -278,23 +278,6 @@ typedef u32 phys_addr_t;
 #endif
 
 /*
- * Backports for affinity hint feature - deprecated on SLES10.2
- */
-typedef struct cpumask *cpumask_var_t;
-#ifndef CONFIG_COMPAT_HAS_IRQ_AFFINITY_HINT
-static inline int irq_set_affinity_hint(unsigned int irq,
-					const struct cpumask *m)
-{
-	return -ENOSYS;
-}
-
-static inline bool cpumask_empty(const struct cpumask *srcp)
-{
-	return true;
-}
-#endif
-
-/*
  * Backport work for QoS dependencies (kernel/pm_qos_params.c)
  * pm-qos stuff written by mark gross mgross@linux.intel.com.
  *
@@ -709,6 +692,18 @@ extern int raw_notifier_call_chain(struct raw_notifier_head *nh,
 #define __raw_notifier_call_chain LINUX_BACKPORT(__raw_notifier_call_chain)
 extern int __raw_notifier_call_chain(struct raw_notifier_head *nh,
 	unsigned long val, void *v, int nr_to_call, int *nr_calls);
+
+#ifndef CONFIG_COMPAT_IS_IP_TOS2PRIO
+#include <net/route.h>
+#define ip_tos2prio LINUX_BACKPORT(ip_tos2prio)
+extern const __u8 ip_tos2prio[16];
+#define rt_tos2priority LINUX_BACKPORT(rt_tos2priority)
+static inline char rt_tos2priority(u8 tos)
+{
+	return ip_tos2prio[IPTOS_TOS(tos)>>1];
+}
+#endif /* CONFIG_COMPAT_IS_IP_TOS2PRIO */
+
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,17)) */
 
 #endif /* LINUX_26_17_COMPAT_H */

@@ -34,7 +34,6 @@
 #include <linux/mlx4/cq.h>
 #include <linux/mlx4/qp.h>
 #include <linux/mlx4/cmd.h>
-#include <linux/interrupt.h>
 
 #include "mlx4_en.h"
 
@@ -66,7 +65,7 @@ int mlx4_en_create_cq(struct mlx4_en_priv *priv,
 	cq->buf_size = cq->size * mdev->dev->caps.cqe_size;
 
 	cq->ring = ring;
-	cq->is_tx = mode;
+	cq->type = mode;
 	cq->vector = mdev->dev->caps.num_comp_vectors;
 
 	/* Allocate HW buffers on provided NUMA node.
@@ -74,22 +73,16 @@ int mlx4_en_create_cq(struct mlx4_en_priv *priv,
 	 */
 	set_dev_node(&mdev->dev->persist->pdev->dev, node);
 	err = mlx4_alloc_hwq_res(mdev->dev, &cq->wqres,
-				cq->buf_size, 2 * PAGE_SIZE);
+				cq->buf_size);
 	set_dev_node(&mdev->dev->persist->pdev->dev, mdev->dev->numa_node);
 	if (err)
 		goto err_cq;
-
-	err = mlx4_en_map_buffer(&cq->wqres.buf);
-	if (err)
-		goto err_res;
 
 	cq->buf = (struct mlx4_cqe *)cq->wqres.buf.direct.buf;
 	*pcq = cq;
 
 	return 0;
 
-err_res:
-	mlx4_free_hwq_res(mdev->dev, &cq->wqres, cq->buf_size);
 err_cq:
 	kfree(cq);
 	*pcq = NULL;
@@ -98,7 +91,7 @@ err_cq:
 
 #define MLX4_EN_EQ_NAME_PRIORITY	2
 
-static void mlx4_en_cq_eq_cb(unsigned vector, u32 uuid, void *data)
+static void mlx4_en_cq_eq_cb(unsigned int vector, u32 uuid, void *data)
 {
 	int err;
 	struct mlx4_en_cq **pcq = data;
@@ -124,7 +117,6 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 {
 	struct mlx4_en_dev *mdev = priv->mdev;
 	int err = 0;
-	char name[25];
 	int timestamp_en = 0;
 	bool assigned_eq = false;
 
@@ -135,7 +127,7 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 	*cq->mcq.arm_db    = 0;
 	memset(cq->buf, 0, cq->buf_size);
 
-	if (cq->is_tx == RX) {
+	if (cq->type == RX) {
 		if (!mlx4_is_eq_vector_valid(mdev->dev, priv->port,
 					     cq->vector)) {
 			cq->vector = cpumask_first(priv->rx_ring[cq->ring]->affinity_mask);
@@ -148,8 +140,8 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 					     &priv->rx_cq[cq_idx],
 					     &cq->vector);
 			if (err) {
-				mlx4_err(mdev, "Failed assigning an EQ to %s\n",
-					 name);
+				mlx4_err(mdev, "Failed assigning an EQ to CQ vector %d\n",
+					 cq->vector);
 				goto free_eq;
 			}
 
@@ -181,42 +173,54 @@ int mlx4_en_activate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq,
 		cq->vector = rx_cq->vector;
 	}
 
-	if (!cq->is_tx)
+	if (cq->type == RX)
 		cq->size = priv->rx_ring[cq->ring]->actual_size;
 
-	if ((cq->is_tx && priv->hwtstamp_config.tx_type) ||
-	    (!cq->is_tx && priv->hwtstamp_config.rx_filter))
+	if ((cq->type != RX && priv->hwtstamp_config.tx_type) ||
+	    (cq->type == RX && priv->hwtstamp_config.rx_filter))
 		timestamp_en = 1;
 
+	cq->mcq.usage = MLX4_RES_USAGE_DRIVER;
 	err = mlx4_cq_alloc(mdev->dev, cq->size, &cq->wqres.mtt,
 			    &mdev->priv_uar, cq->wqres.db.dma, &cq->mcq,
 			    cq->vector, 0, timestamp_en, &cq->wqres.buf, false);
 	if (err)
 		goto free_eq;
 
-	cq->mcq.comp  = cq->is_tx ? mlx4_en_tx_irq : mlx4_en_rx_irq;
 	cq->mcq.event = mlx4_en_cq_event;
 
-	if (cq->is_tx) {
+	switch (cq->type) {
+	case TX:
+		cq->mcq.comp = mlx4_en_tx_irq;
+#ifdef HAVE_NETIF_TX_NAPI_ADD
+		netif_tx_napi_add(cq->dev, &cq->napi,
+#else
 		netif_napi_add(cq->dev, &cq->napi,
-			       vgtp_cq ? mlx4_en_vgtp_poll_tx_cq :
-			       mlx4_en_poll_tx_cq,
-			       NAPI_POLL_WEIGHT);
-	} else {
-		netif_napi_add(cq->dev, &cq->napi, mlx4_en_poll_rx_cq, 64);
-#ifdef HAVE_NAPI_HASH_ADD
-		napi_hash_add(&cq->napi);
 #endif
+				  vgtp_cq ? mlx4_en_vgtp_poll_tx_cq :
+				  mlx4_en_poll_tx_cq,
+				  NAPI_POLL_WEIGHT);
+		napi_enable(&cq->napi);
+		break;
+	case RX:
+		cq->mcq.comp = mlx4_en_rx_irq;
+		netif_napi_add(cq->dev, &cq->napi, mlx4_en_poll_rx_cq, 64);
+		napi_enable(&cq->napi);
+		break;
+	case TX_XDP:
+		/* nothing regarding napi, it's shared with rx ring */
+		cq->xdp_busy = false;
+		break;
 	}
-
-	napi_enable(&cq->napi);
 
 	return 0;
 
 free_eq:
 	if (assigned_eq)
-		mlx4_release_eq(mdev->dev, MLX4_EQ_ID_TO_UUID(
-					MLX4_EQ_ID_EN, priv->port, cq_idx),
+		mlx4_release_eq(mdev->dev,
+				MLX4_EQ_ID_TO_UUID(MLX4_EQ_ID_EN,
+						   priv->port,
+						   cq_idx),
 				cq->vector);
 	cq->vector = mdev->dev->caps.num_comp_vectors;
 	return err;
@@ -227,33 +231,33 @@ void mlx4_en_destroy_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq **pcq)
 	struct mlx4_en_dev *mdev = priv->mdev;
 	struct mlx4_en_cq *cq = *pcq;
 
-	mlx4_en_unmap_buffer(&cq->wqres.buf);
 	mlx4_free_hwq_res(mdev->dev, &cq->wqres, cq->buf_size);
-	if (mlx4_is_eq_vector_valid(mdev->dev, priv->port, cq->vector) &&
-	    cq->is_tx == RX)
-		mlx4_release_eq(priv->mdev->dev, MLX4_EQ_ID_TO_UUID(
-					MLX4_EQ_ID_EN, priv->port,
-					pcq - priv->rx_cq),
-				cq->vector);
-	cq->vector = 0;
 	cq->buf_size = 0;
 	cq->buf = NULL;
 	kfree(cq);
 	*pcq = NULL;
 }
 
-void mlx4_en_deactivate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
+void mlx4_en_deactivate_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq **pcq)
 {
-	napi_disable(&cq->napi);
-#ifdef HAVE_NAPI_HASH_ADD
-	if (!cq->is_tx) {
-		napi_hash_del(&cq->napi);
-		synchronize_rcu();
+	struct mlx4_en_cq *cq = *pcq;
+
+	if (cq->type != TX_XDP) {
+		napi_disable(&cq->napi);
+		netif_napi_del(&cq->napi);
 	}
-#endif
-	netif_napi_del(&cq->napi);
 
 	mlx4_cq_free(priv->mdev->dev, &cq->mcq);
+
+	if (mlx4_is_eq_vector_valid(priv->mdev->dev, priv->port, cq->vector) &&
+	    cq->type == RX)
+		mlx4_release_eq(priv->mdev->dev,
+				MLX4_EQ_ID_TO_UUID(MLX4_EQ_ID_EN,
+						   priv->port,
+						   pcq - priv->rx_cq),
+				cq->vector);
+
+	cq->vector = priv->mdev->dev->caps.num_comp_vectors;
 }
 
 /* Set rx cq moderation parameters */
@@ -263,12 +267,10 @@ int mlx4_en_set_cq_moder(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
 			      cq->moder_cnt, cq->moder_time);
 }
 
-int mlx4_en_arm_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
+void mlx4_en_arm_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq)
 {
 	mlx4_cq_arm(&cq->mcq, MLX4_CQ_DB_REQ_NOT, priv->mdev->uar_map,
 		    &priv->mdev->uar_lock);
-
-	return 0;
 }
 
 

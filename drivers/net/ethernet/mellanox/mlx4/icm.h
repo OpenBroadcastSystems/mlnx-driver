@@ -39,8 +39,8 @@
 #include <linux/mutex.h>
 
 #define MLX4_ICM_CHUNK_LEN						\
-	((256 - sizeof (struct list_head) - 2 * sizeof (int)) /		\
-	 (sizeof (struct scatterlist)))
+	((256 - sizeof(struct list_head) - 2 * sizeof(int)) /		\
+	 (sizeof(struct scatterlist)))
 
 enum {
 	MLX4_ICM_PAGE_SHIFT	= 12,
@@ -71,15 +71,19 @@ struct mlx4_icm *mlx4_alloc_icm(struct mlx4_dev *dev, int npages,
 				gfp_t gfp_mask, int coherent);
 void mlx4_free_icm(struct mlx4_dev *dev, struct mlx4_icm *icm, int coherent);
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+int mlx4_table_get(struct mlx4_dev *dev, struct mlx4_icm_table *table, u32 obj);
+#else
 int mlx4_table_get(struct mlx4_dev *dev, struct mlx4_icm_table *table, u32 obj,
 		   gfp_t gfp);
+#endif
 void mlx4_table_put(struct mlx4_dev *dev, struct mlx4_icm_table *table, u32 obj);
 int mlx4_table_get_range(struct mlx4_dev *dev, struct mlx4_icm_table *table,
 			 u32 start, u32 end);
 void mlx4_table_put_range(struct mlx4_dev *dev, struct mlx4_icm_table *table,
 			  u32 start, u32 end);
 int mlx4_init_icm_table(struct mlx4_dev *dev, struct mlx4_icm_table *table,
-			u64 virt, int obj_size,	u64 nobj, int reserved,
+			u64 virt, int obj_size, u64 nobj, int reserved,
 			int use_lowmem, int use_coherent);
 void mlx4_cleanup_icm_table(struct mlx4_dev *dev, struct mlx4_icm_table *table);
 void *mlx4_table_find(struct mlx4_icm_table *table, u32 obj, dma_addr_t *dma_handle);

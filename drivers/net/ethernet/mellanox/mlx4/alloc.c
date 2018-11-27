@@ -186,7 +186,7 @@ int mlx4_bitmap_init(struct mlx4_bitmap *bitmap, u32 num, u32 mask,
 	bitmap->effective_len = bitmap->avail;
 	spin_lock_init(&bitmap->lock);
 	bitmap->table = kzalloc(BITS_TO_LONGS(bitmap->max) *
-				sizeof (long), GFP_KERNEL);
+				sizeof(long), GFP_KERNEL);
 	if (!bitmap->table)
 		return -ENOMEM;
 
@@ -283,7 +283,7 @@ int mlx4_zone_add_one(struct mlx4_zone_allocator *zone_alloc,
 }
 
 /* Should be called under a lock */
-static int __mlx4_zone_remove_one_entry(struct mlx4_zone_entry *entry)
+static void __mlx4_zone_remove_one_entry(struct mlx4_zone_entry *entry)
 {
 	struct mlx4_zone_allocator *zone_alloc = entry->allocator;
 
@@ -315,8 +315,6 @@ static int __mlx4_zone_remove_one_entry(struct mlx4_zone_entry *entry)
 		}
 		zone_alloc->mask = mask;
 	}
-
-	return 0;
 }
 
 void mlx4_zone_allocator_destroy(struct mlx4_zone_allocator *zone_alloc)
@@ -457,7 +455,7 @@ struct mlx4_bitmap *mlx4_zone_get_bitmap(struct mlx4_zone_allocator *zones, u32 
 int mlx4_zone_remove_one(struct mlx4_zone_allocator *zones, u32 uid)
 {
 	struct mlx4_zone_entry *zone;
-	int res;
+	int res = 0;
 
 	spin_lock(&zones->lock);
 
@@ -468,7 +466,7 @@ int mlx4_zone_remove_one(struct mlx4_zone_allocator *zones, u32 uid)
 		goto out;
 	}
 
-	res = __mlx4_zone_remove_one_entry(zone);
+	__mlx4_zone_remove_one_entry(zone);
 
 out:
 	spin_unlock(&zones->lock);
@@ -576,78 +574,90 @@ out:
 
 	return res;
 }
-/*
- * Handling for queue buffers -- we allocate a bunch of memory and
- * register it in a memory region at HCA virtual address 0.  If the
- * requested size is > max_direct, we split the allocation into
- * multiple pages, so we don't require too much contiguous memory.
- */
 
-int mlx4_buf_alloc(struct mlx4_dev *dev, int size, int max_direct,
-		   struct mlx4_buf *buf, gfp_t gfp)
+static int mlx4_buf_direct_alloc(struct mlx4_dev *dev, int size,
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+				 struct mlx4_buf *buf)
+#else
+				 struct mlx4_buf *buf, gfp_t gfp)
+#endif
 {
 	dma_addr_t t;
 
-/* ARM arch does not allow vmap(virt_to_page(x)) operations.
- * In this case, we must allocate 1 contigious DMA buffer.
- */
-#ifdef CONFIG_ARM
-	max_direct = size;
+	buf->nbufs        = 1;
+	buf->npages       = 1;
+	buf->page_shift   = get_order(size) + PAGE_SHIFT;
+	buf->direct.buf   =
+		dma_zalloc_coherent(&dev->persist->pdev->dev,
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+				    size, &t, GFP_KERNEL);
+#else
+				    size, &t, gfp);
 #endif
+	if (!buf->direct.buf)
+		return -ENOMEM;
 
+	buf->direct.map = t;
+
+	while (t & ((1 << buf->page_shift) - 1)) {
+		--buf->page_shift;
+		buf->npages *= 2;
+	}
+
+	return 0;
+}
+
+/* Handling for queue buffers -- we allocate a bunch of memory and
+ * register it in a memory region at HCA virtual address 0. If the
+ *  requested size is > max_direct, we split the allocation into
+ *  multiple pages, so we don't require too much contiguous memory.
+ */
+int mlx4_buf_alloc(struct mlx4_dev *dev, int size, int max_direct,
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+		   struct mlx4_buf *buf)
+#else
+		   struct mlx4_buf *buf, gfp_t gfp)
+#endif
+{
 	if (size <= max_direct) {
-		buf->nbufs        = 1;
-		buf->npages       = 1;
-		buf->page_shift   = get_order(size) + PAGE_SHIFT;
-		buf->direct.buf   = dma_alloc_coherent(&dev->persist->pdev->dev,
-						       size, &t, gfp);
-		if (!buf->direct.buf)
-			return -ENOMEM;
-
-		buf->direct.map = t;
-
-		while (t & ((1 << buf->page_shift) - 1)) {
-			--buf->page_shift;
-			buf->npages *= 2;
-		}
-
-		memset(buf->direct.buf, 0, size);
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+		return mlx4_buf_direct_alloc(dev, size, buf);
+#else
+		return mlx4_buf_direct_alloc(dev, size, buf, gfp);
+#endif
 	} else {
+		dma_addr_t t;
 		int i;
 
-		buf->direct.buf  = NULL;
-		buf->nbufs       = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-		buf->npages      = buf->nbufs;
+		buf->direct.buf = NULL;
+		buf->nbufs	= (size + PAGE_SIZE - 1) / PAGE_SIZE;
+		buf->npages	= buf->nbufs;
 		buf->page_shift  = PAGE_SHIFT;
-		buf->page_list   = kcalloc(buf->nbufs, sizeof(*buf->page_list),
-					   gfp);
+		buf->page_list  = kzalloc_node(buf->nbufs * sizeof(*buf->page_list),
+					       GFP_KERNEL,
+					       dev_to_node(&dev->persist->pdev->dev));
+		if (!buf->page_list)
+			buf->page_list = kcalloc(buf->nbufs, sizeof(*buf->page_list),
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+						 GFP_KERNEL);
+#else
+						 gfp);
+#endif
 		if (!buf->page_list)
 			return -ENOMEM;
 
 		for (i = 0; i < buf->nbufs; ++i) {
 			buf->page_list[i].buf =
-				dma_alloc_coherent(&dev->persist->pdev->dev,
-						   PAGE_SIZE,
-						   &t, gfp);
+				dma_zalloc_coherent(&dev->persist->pdev->dev,
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+						    PAGE_SIZE, &t, GFP_KERNEL);
+#else
+						    PAGE_SIZE, &t, gfp);
+#endif
 			if (!buf->page_list[i].buf)
 				goto err_free;
 
 			buf->page_list[i].map = t;
-
-			memset(buf->page_list[i].buf, 0, PAGE_SIZE);
-		}
-
-		if (BITS_PER_LONG == 64) {
-			struct page **pages;
-			pages = kmalloc(sizeof *pages * buf->nbufs, gfp);
-			if (!pages)
-				goto err_free;
-			for (i = 0; i < buf->nbufs; ++i)
-				pages[i] = virt_to_page(buf->page_list[i].buf);
-			buf->direct.buf = vmap(pages, buf->nbufs, VM_MAP, PAGE_KERNEL);
-			kfree(pages);
-			if (!buf->direct.buf)
-				goto err_free;
 		}
 	}
 
@@ -662,15 +672,11 @@ EXPORT_SYMBOL_GPL(mlx4_buf_alloc);
 
 void mlx4_buf_free(struct mlx4_dev *dev, int size, struct mlx4_buf *buf)
 {
-	int i;
-
-	if (buf->nbufs == 1)
+	if (buf->nbufs == 1) {
 		dma_free_coherent(&dev->persist->pdev->dev, size,
-				  buf->direct.buf,
-				  buf->direct.map);
-	else {
-		if (BITS_PER_LONG == 64)
-			vunmap(buf->direct.buf);
+				  buf->direct.buf, buf->direct.map);
+	} else {
+		int i;
 
 		for (i = 0; i < buf->nbufs; ++i)
 			if (buf->page_list[i].buf)
@@ -683,12 +689,27 @@ void mlx4_buf_free(struct mlx4_dev *dev, int size, struct mlx4_buf *buf)
 }
 EXPORT_SYMBOL_GPL(mlx4_buf_free);
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+static struct mlx4_db_pgdir *mlx4_alloc_db_pgdir(struct device *dma_device)
+#else
 static struct mlx4_db_pgdir *mlx4_alloc_db_pgdir(struct device *dma_device,
 						 gfp_t gfp)
+#endif
 {
 	struct mlx4_db_pgdir *pgdir;
 
-	pgdir = kzalloc(sizeof *pgdir, gfp);
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	pgdir = kzalloc_node(sizeof(*pgdir), GFP_KERNEL,
+#else
+	pgdir = kzalloc_node(sizeof(*pgdir), gfp,
+#endif
+			     dev_to_node(dma_device));
+	if (!pgdir)
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+		pgdir = kzalloc(sizeof(*pgdir), GFP_KERNEL);
+#else
+		pgdir = kzalloc(sizeof(*pgdir), gfp);
+#endif
 	if (!pgdir)
 		return NULL;
 
@@ -696,7 +717,11 @@ static struct mlx4_db_pgdir *mlx4_alloc_db_pgdir(struct device *dma_device,
 	pgdir->bits[0] = pgdir->order0;
 	pgdir->bits[1] = pgdir->order1;
 	pgdir->db_page = dma_alloc_coherent(dma_device, PAGE_SIZE,
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+					    &pgdir->db_dma, GFP_KERNEL);
+#else
 					    &pgdir->db_dma, gfp);
+#endif
 	if (!pgdir->db_page) {
 		kfree(pgdir);
 		return NULL;
@@ -736,7 +761,11 @@ found:
 	return 0;
 }
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+int mlx4_db_alloc(struct mlx4_dev *dev, struct mlx4_db *db, int order)
+#else
 int mlx4_db_alloc(struct mlx4_dev *dev, struct mlx4_db *db, int order, gfp_t gfp)
+#endif
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_db_pgdir *pgdir;
@@ -748,7 +777,11 @@ int mlx4_db_alloc(struct mlx4_dev *dev, struct mlx4_db *db, int order, gfp_t gfp
 		if (!mlx4_alloc_db_from_pgdir(pgdir, db, order))
 			goto out;
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	pgdir = mlx4_alloc_db_pgdir(&dev->persist->pdev->dev);
+#else
 	pgdir = mlx4_alloc_db_pgdir(&dev->persist->pdev->dev, gfp);
+#endif
 	if (!pgdir) {
 		ret = -ENOMEM;
 		goto out;
@@ -796,17 +829,25 @@ void mlx4_db_free(struct mlx4_dev *dev, struct mlx4_db *db)
 EXPORT_SYMBOL_GPL(mlx4_db_free);
 
 int mlx4_alloc_hwq_res(struct mlx4_dev *dev, struct mlx4_hwq_resources *wqres,
-		       int size, int max_direct)
+		       int size)
 {
 	int err;
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	err = mlx4_db_alloc(dev, &wqres->db, 1);
+#else
 	err = mlx4_db_alloc(dev, &wqres->db, 1, GFP_KERNEL);
+#endif
 	if (err)
 		return err;
 
 	*wqres->db.db = 0;
 
-	err = mlx4_buf_alloc(dev, size, max_direct, &wqres->buf, GFP_KERNEL);
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	err = mlx4_buf_direct_alloc(dev, size, &wqres->buf);
+#else
+	err = mlx4_buf_direct_alloc(dev, size, &wqres->buf, GFP_KERNEL);
+#endif
 	if (err)
 		goto err_db;
 
@@ -815,7 +856,11 @@ int mlx4_alloc_hwq_res(struct mlx4_dev *dev, struct mlx4_hwq_resources *wqres,
 	if (err)
 		goto err_buf;
 
+#ifdef HAVE_MEMALLOC_NOIO_SAVE
+	err = mlx4_buf_write_mtt(dev, &wqres->mtt, &wqres->buf);
+#else
 	err = mlx4_buf_write_mtt(dev, &wqres->mtt, &wqres->buf, GFP_KERNEL);
+#endif
 	if (err)
 		goto err_mtt;
 

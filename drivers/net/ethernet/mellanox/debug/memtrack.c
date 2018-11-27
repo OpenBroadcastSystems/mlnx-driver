@@ -24,8 +24,14 @@
 #ifdef kmalloc
 	#undef kmalloc
 #endif
+#ifdef kmalloc_array
+	#undef kmalloc_array
+#endif
 #ifdef kmemdup
 	#undef kmemdup
+#endif
+#ifdef kstrdup
+	#undef kstrdup
 #endif
 #ifdef kfree
 	#undef kfree
@@ -51,6 +57,9 @@
 #ifdef memdup_user
 	#undef memdup_user
 #endif
+#ifdef memdup_user_nul
+	#undef memdup_user_nul
+#endif
 #ifdef kmem_cache_alloc
 	#undef kmem_cache_alloc
 #endif
@@ -65,6 +74,9 @@
 #endif
 #ifdef ioremap
 	#undef ioremap
+#endif
+#ifdef ioremap_wc
+	#undef ioremap_wc
 #endif
 #ifdef io_mapping_create_wc
 	#undef io_mapping_create_wc
@@ -81,8 +93,14 @@
 #ifdef alloc_pages
 	#undef alloc_pages
 #endif
+#ifdef dev_alloc_pages
+	#undef dev_alloc_pages
+#endif
 #ifdef free_pages
 	#undef free_pages
+#endif
+#ifdef split_page
+	#undef split_page
 #endif
 #ifdef get_page
 	#undef get_page
@@ -104,6 +122,18 @@
 #endif
 #ifdef destroy_workqueue
 	#undef destroy_workqueue
+#endif
+#ifdef kvzalloc
+	#undef kvzalloc
+#endif
+#ifdef kvmalloc_array
+	#undef kvmalloc_array
+#endif
+#ifdef kvmalloc_node
+	#undef kvmalloc_node
+#endif
+#ifdef kvzalloc_node
+	#undef kvzalloc_node
 #endif
 /* if kernel version < 2.6.37, it's defined in compat as singlethread_workqueue */
 #if defined(alloc_ordered_workqueue) && LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 37)
@@ -728,9 +758,11 @@ int is_non_trackable_alloc_func(const char *func_name)
 		"mlx4_en_destroy_allocator",
 		"mlx4_en_complete_rx_desc",
 		"mlx4_alloc_pages",
-		"mlx5e_alloc_striding_rx_wqe",
-		"mlx5e_get_rx_skb",
-		"free_striding_rq_res",
+		"mlx4_alloc_page",
+		"mlx5e_page_alloc_mapped",
+		"mlx5e_page_release",
+		"mlx5e_rx_free_page_cache",
+		"mlx5e_rx_cache_reduce_clean_pending",
 		/* vnic skb functions */
 		"free_single_frag",
 		"vnic_alloc_rx_skb",
@@ -928,7 +960,11 @@ int memtrack_get_page_ref_count(unsigned long addr)
 		if (cur_mem_info_p->addr == addr) {
 			/* Found given address in the database - check ref-count */
 			struct page *page = (struct page *)(cur_mem_info_p->addr);
+#ifdef HAVE_MM_PAGE__COUNT
 			ref_conut = atomic_read(&page->_count);
+#else
+			ref_conut = atomic_read(&page->_refcount);
+#endif
 			memtrack_spin_unlock(&obj_desc_p->hash_lock, flags);
 			return ref_conut;
 		}
@@ -963,14 +999,14 @@ static void memtrack_report(void)
 				memtrack_spin_lock(&obj_desc_p->hash_lock, flags);      /* protect per bucket/list */
 				cur_mem_info_p = obj_desc_p->mem_hash[cur_bucket];
 				while (cur_mem_info_p != NULL) {        /* scan bucket */
-					printk(KERN_INFO "%s::%lu: %s(%lu)==%lX dev=%lX %s\n",
-					       cur_mem_info_p->filename,
-					       cur_mem_info_p->line_num,
-					       memtype_alloc_str(memtype),
-					       cur_mem_info_p->size,
-					       cur_mem_info_p->addr,
-					       cur_mem_info_p->dev,
-					       cur_mem_info_p->ext_info);
+					printk_ratelimited(KERN_INFO "%s::%lu: %s(%lu)==%lX dev=%lX %s\n",
+							   cur_mem_info_p->filename,
+							   cur_mem_info_p->line_num,
+							   memtype_alloc_str(memtype),
+							   cur_mem_info_p->size,
+							   cur_mem_info_p->addr,
+							   cur_mem_info_p->dev,
+							   cur_mem_info_p->ext_info);
 					cur_mem_info_p = cur_mem_info_p->next;
 					++ detected_leaks;
 				}       /* while cur_mem_info_p */

@@ -1,9 +1,11 @@
+#ifndef COMPAT_LINUX_FLOW_KEYS_H
+#define COMPAT_LINUX_FLOW_KEYS_H
+
+#include "../../compat/config.h"
+
 #ifdef HAVE_NET_FLOW_KEYS_H
 #include_next <net/flow_keys.h>
-#else
-
-#ifndef _NET_FLOW_KEYS_H
-#define _NET_FLOW_KEYS_H
+#else /* HAVE_NET_FLOW_KEYS_H */
 
 struct flow_keys {
 	/* (src,dst) must be grouped, in the same way than in IP header */
@@ -18,5 +20,7 @@ struct flow_keys {
 
 #define skb_flow_dissect LINUX_BACKPORT(skb_flow_dissect)
 extern bool skb_flow_dissect(const struct sk_buff *skb, struct flow_keys *flow);
-#endif
-#endif
+
+#endif /* HAVE_NET_FLOW_KEYS_H */
+
+#endif /* COMPAT_LINUX_FLOW_KEYS_H */

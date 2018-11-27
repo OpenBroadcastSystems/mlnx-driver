@@ -30,16 +30,21 @@
 %{!?KMP: %global KMP 0}
 
 %global WITH_SYSTEMD %(if ( test -d "%{_unitdir}" > /dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global WINDRIVER %(if (grep -qiE "Wind River" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global POWERKVM %(if (grep -qiE "powerkvm" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global BLUENIX %(if (grep -qiE "Bluenix" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global XENSERVER65 %(if (grep -qiE "XenServer.*6\.5" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 
 %{!?MEMTRACK: %global MEMTRACK 0}
 %{!?MLX4: %global MLX4 1}
 %{!?MLX5: %global MLX5 1}
+%{!?MLXFW: %global MLXFW 1}
 
 %{!?KVERSION: %global KVERSION %(uname -r)}
 %global kernel_version %{KVERSION}
 %global krelver %(echo -n %{KVERSION} | sed -e 's/-/_/g')
 # take path to kernel sources if provided, otherwise look in default location (for non KMP rpms).
-%{!?K_SRC: %global K_SRC /lib/modules/%{KVERSION}/build}
+%{!?KSRC: %global KSRC /lib/modules/%{KVERSION}/build}
 
 %if "%{_vendor}" == "suse"
 %if %{!?KVER:1}%{?KVER:0}
@@ -67,14 +72,15 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 3.3}
-%{!?_release: %global _release 1.0.0.0.0.gf583963}
+%{!?_version: %global _version 4.3}
+%{!?_release: %global _release 3.0.2.0.gcf60532}
+%global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 Name: %{_name}
 Group: System Environment
 Version: %{_version}
 Release: %{_release}%{?_dist}
-License: GPLv2 or BSD
+License: GPLv2
 Url: http://www.mellanox.com
 Group: System Environment/Kernel
 Vendor: Mellanox Technologies
@@ -88,7 +94,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-3.3-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.3-3.0.2.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -96,7 +102,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-3.3-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.3-3.0.2.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -104,37 +110,36 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-3.3-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.3-3.0.2.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
 Group: System Environment/Libraries
-conflicts: ofed-scripts
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-3.3-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.3-3.0.2.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-3.3-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.3-3.0.2.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
 %global kernel_release() $(make -C %{1} kernelrelease | grep -v make | tail -1)
 BuildRequires: %kernel_module_package_buildreqs
 %(echo "Requires: mlnx-en-utils" > ${RPM_BUILD_ROOT}/preamble)
-%kernel_module_package -f %{SOURCE1} %flav -p ${RPM_BUILD_ROOT}/preamble
+%kernel_module_package -f %{SOURCE1} %flav -p ${RPM_BUILD_ROOT}/preamble -r %{_kmp_rel}
 %else # not KMP
-%global kernel_source() %{K_SRC}
+%global kernel_source() %{KSRC}
 %global kernel_release() %{KVERSION}
 %global flavors_to_build default
 %package -n mlnx_en
 Version: %{_version}
-Release: %{_release}.%{krelver}
+Release: %{_release}.kver.%{krelver}
 Requires: coreutils
 Requires: kernel
 Requires: pciutils
@@ -147,7 +152,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-3.3-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.3-3.0.2.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -162,7 +167,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mln
 %if "%{WITH_MOD_SIGN}" == "1"
 # call module sign script
 %global __modsign_install_post \
-    %{_builddir}/%{name}-%{version}/source/ofed_scripts/tools/sign-modules %{buildroot}/lib/modules/ || exit 1 \
+    %{_builddir}/%{name}-%{version}/source/ofed_scripts/tools/sign-modules %{buildroot}/lib/modules/ %{kernel_source default} || exit 1 \
 %{nil}
 
 %global __debug_package 1
@@ -189,7 +194,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mln
 %global __find_requires %{nil}
 %endif
 
-%if "%{_vendor}" == "wrs"
+%if "%{_vendor}" == "wrs" || "%{_vendor}" == "bluenix"
 %global __python_provides %{nil}
 %global __python_requires %{nil}
 %endif
@@ -235,9 +240,12 @@ for flavor in %{flavors_to_build}; do
 	%if "%{MLX5}" == "0"
 		export MLNX_EN_PATCH_PARAMS="$MLNX_EN_PATCH_PARAMS --without-mlx5"
 	%endif
+	%if "%{MLXFW}" == "0"
+		export MLNX_EN_PATCH_PARAMS="$MLNX_EN_PATCH_PARAMS --without-mlxfw"
+	%endif
 	find compat -type f -exec touch -t 200012201010 '{}' \; || true
 	./scripts/mlnx_en_patch.sh $MLNX_EN_PATCH_PARAMS %{?_smp_mflags}
-	make KSRC=$KSRC V=0 %{?_smp_mflags}
+	make V=0 %{?_smp_mflags}
 	cd -
 done
 gzip -c source/scripts/mlx4_en.7 > mlx4_en.7.gz
@@ -260,18 +268,19 @@ for flavor in %{flavors_to_build}; do
 done
 
 # Set the module(s) to be executable, so that they will be stripped when packaged.
-find %{buildroot} -type f -name \*.ko -exec %{__chmod} u+x \{\} \;
+find %{buildroot} \( -type f -name '*.ko' -o -name '*ko.gz' \) -exec %{__chmod} u+x \{\} \;
 
 %if "%{_vendor}" == "redhat"
-%if "%{KMP}" == "1"
+%if ! 0%{?fedora}
 %{__install} -d %{buildroot}%{_sysconfdir}/depmod.d/
-for module in `find %{buildroot}/ -name '*.ko'`
+for module in `find %{buildroot}/ -name '*.ko' -o -name '*.ko.gz' | sort`
 do
 ko_name=${module##*/}
-mod_name=${ko_name/.ko/}
+mod_name=${ko_name/.ko*/}
 mod_path=${module/*%{name}}
 mod_path=${mod_path/\/${ko_name}}
-echo "override ${mod_name} * weak-updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}.conf
+echo "override ${mod_name} * weak-updates/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}-${mod_name}.conf
+echo "override ${mod_name} * extra/%{name}${mod_path}" >> %{buildroot}%{_sysconfdir}/depmod.d/%{name}-${mod_name}.conf
 done
 %endif
 %endif
@@ -305,36 +314,9 @@ fi
 install -D -m 644 source/scripts/mlnx-en.d.service %{buildroot}/%{_unitdir}/mlnx-en.d.service
 %endif
 
-%postun doc
-if [ -f %{_mandir}/man7/mlx4_en.7.gz ]; then
-	exit 0
-fi
-
-%if "%{KMP}" != "1"
-%post -n mlnx_en
-/sbin/depmod -r -ae %{KVERSION}
-# W/A for OEL6.7/7.x inbox modules get locked in memory
-# in dmesg we get: Module mlx4_core locked in memory until next boot
-if (grep -qiE "Oracle.*(6.7| 7)" /etc/issue /etc/*release* 2>/dev/null); then
-	/sbin/dracut --force
-fi
-
-%postun -n mlnx_en
-if [ $1 = 0 ]; then  # 1 : Erase, not upgrade
-	/sbin/depmod -r -ae %{KVERSION}
-	# W/A for OEL6.7/7.x inbox modules get locked in memory
-	# in dmesg we get: Module mlx4_core locked in memory until next boot
-	if (grep -qiE "Oracle.*(6.7| 7)" /etc/issue /etc/*release* 2>/dev/null); then
-		/sbin/dracut --force
-	fi
-fi
-%endif
-
-%post -n mlnx-en-utils
-if [ $1 -eq 1 ]; then # 1 : This package is being installed
-
-if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then        
-perl -i -ne 'if (m@^#!/bin/bash@) {
+# Update /etc/init.d/mlnx-en.d service header
+if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then
+    perl -i -ne 'if (m@^#!/bin/bash@) {
         print q@#!/bin/bash
 #
 # Bring up/down mlnx-en.d
@@ -349,20 +331,12 @@ perl -i -ne 'if (m@^#!/bin/bash@) {
 @;
                  } else {
                      print;
-                 }' /etc/init.d/mlnx-en.d
-
-        /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
-        /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
-        /sbin/chkconfig --del mlnx-en.d >/dev/null 2>&1 || true
-
-        /sbin/chkconfig --add mlnx-en.d >/dev/null 2>&1 || true
-        /sbin/chkconfig mlnx-en.d on >/dev/null 2>&1 || true
-        /usr/bin/systemctl enable mlnx-en.d >/dev/null 2>&1 || true
+                 }' %{buildroot}/etc/init.d/mlnx-en.d
 fi
 
-if [ -f /etc/SuSE-release ]; then
+if [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
     local_fs='$local_fs'
-        perl -i -ne "if (m@^#!/bin/bash@) {
+    perl -i -ne "if (m@^#!/bin/bash@) {
         print q@#!/bin/bash
 ### BEGIN INIT INFO
 # Provides:       mlnx-en.d
@@ -376,19 +350,96 @@ if [ -f /etc/SuSE-release ]; then
 @;
                  } else {
                      print;
-                 }" /etc/init.d/mlnx-en.d
+                 }" %{buildroot}/etc/init.d/mlnx-en.d
+fi
 
+# Update mlnx-en.conf
+%if "%{MLX4}" == "0"
+	sed -i 's/MLX4_LOAD=yes/MLX4_LOAD=no/' %{buildroot}/etc/mlnx-en.conf
+%endif
+%if "%{MLX5}" == "0"
+	sed -i 's/MLX5_LOAD=yes/MLX5_LOAD=no/' %{buildroot}/etc/mlnx-en.conf
+%endif
+
+%if "%{XENSERVER65}" == "1"
+	# mlx4_core fails to load on xenserver 6.5 with the following error:
+	# mlx4_core 0000:01:00.0: Failed to map MCG context memory, aborting
+	# mlx4_core: probe of 0000:01:00.0 failed with error -12
+	# This happens only when DMFS is used (module parameter log_num_mgm_entry < 0).
+	mkdir -p %{buildroot}/etc/modprobe.d
+	echo "# Module parameters for MLNX_OFED kernel modules" > %{buildroot}/etc/modprobe.d/mlnx_en.conf
+	echo "#" >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
+	echo "# Please don't edit this file. Create a new file under" >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
+	echo "# /etc/modprobe.d/ for your configurations." >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
+	echo "options mlx4_core log_num_mgm_entry_size=10" >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
+%endif
+
+# end of install
+
+%postun doc
+if [ -f %{_mandir}/man7/mlx4_en.7.gz ]; then
+	exit 0
+fi
+
+%if "%{KMP}" != "1"
+%post -n mlnx_en
+/sbin/depmod -r -a %{KVERSION}
+# W/A for OEL6.7/7.x inbox modules get locked in memory
+# in dmesg we get: Module mlx4_core locked in memory until next boot
+if (grep -qiE "Oracle.*(6.[7-9]| 7)" /etc/issue /etc/*release* 2>/dev/null); then
+	/sbin/dracut --force
+fi
+
+%postun -n mlnx_en
+if [ $1 = 0 ]; then  # 1 : Erase, not upgrade
+	/sbin/depmod -r -a %{KVERSION}
+	# W/A for OEL6.7/7.x inbox modules get locked in memory
+	# in dmesg we get: Module mlx4_core locked in memory until next boot
+	if (grep -qiE "Oracle.*(6.[7-9]| 7)" /etc/issue /etc/*release* 2>/dev/null); then
+		/sbin/dracut --force
+	fi
+fi
+%endif
+
+%post -n mlnx-en-utils
+if [ $1 -eq 1 ]; then # 1 : This package is being installed
+    if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then
+        /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
+        /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
+        /sbin/chkconfig --del mlnx-en.d >/dev/null 2>&1 || true
+
+%if "%{WITH_SYSTEMD}" != "1"
+        /sbin/chkconfig --add mlnx-en.d >/dev/null 2>&1 || true
+        /sbin/chkconfig mlnx-en.d on >/dev/null 2>&1 || true
+%else
+        /usr/bin/systemctl enable mlnx-en.d >/dev/null 2>&1 || true
+%endif
+    fi
+
+    if [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
         /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
         /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
         /sbin/insserv -r mlnx-en.d >/dev/null 2>&1 || true
 
+%if "%{WITH_SYSTEMD}" != "1"
         /sbin/insserv mlnx-en.d >/dev/null 2>&1 || true
         /sbin/chkconfig mlnx-en.d on >/dev/null 2>&1 || true
+%else
         /usr/bin/systemctl enable mlnx-en.d >/dev/null 2>&1 || true
-fi
+%endif
+    fi
+
+%if "%{WINDRIVER}" == "1" || "%{BLUENIX}" == "1"
+    /usr/sbin/update-rc.d mlnx-en.d defaults || true
+%endif
+
+%if "%{POWERKVM}" == "1"
+    /usr/bin/systemctl disable mlnx-en.d >/dev/null  2>&1 || true
+    /usr/bin/systemctl enable mlnx-en.d >/dev/null  2>&1 || true
+%endif
 
 %if "%{WITH_SYSTEMD}" == "1"
-/usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
+    /usr/bin/systemctl daemon-reload >/dev/null 2>&1 || :
 %endif
 
 fi # 1 : closed
@@ -396,15 +447,24 @@ fi # 1 : closed
 
 %preun -n mlnx-en-utils
 if [ $1 = 0 ]; then  # 1 : Erase, not upgrade
-          /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
-          /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
+    /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
+    /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
 
-          if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then        
-                /sbin/chkconfig --del mlnx-en.d  >/dev/null 2>&1 || true
-          fi
-          if [ -f /etc/SuSE-release ]; then
-                /sbin/insserv -r mlnx-en.d >/dev/null 2>&1 || true
-          fi
+    if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then
+        /sbin/chkconfig --del mlnx-en.d  >/dev/null 2>&1 || true
+    fi
+    if [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
+        /sbin/insserv -r mlnx-en.d >/dev/null 2>&1 || true
+    fi
+
+%if "%{WINDRIVER}" == "1" || "%{BLUENIX}" == "1"
+    /usr/sbin/update-rc.d -f mlnx-en.d remove || true
+%endif
+
+%if "%{POWERKVM}" == "1"
+    /usr/bin/systemctl disable mlnx-en.d >/dev/null  2>&1 || true
+%endif
+
 fi
 # END of pre uninstall utils
 
@@ -419,7 +479,12 @@ rm -rf %{buildroot}
 
 %if "%{KMP}" != "1"
 %files -n mlnx_en
-/lib/modules/%{KVERSION}/
+/lib/modules/%{KVERSION}/%{install_mod_dir}/
+%if "%{_vendor}" == "redhat"
+%if ! 0%{?fedora}
+%config(noreplace) %{_sysconfdir}/depmod.d/%{name}-*.conf
+%endif
+%endif
 %endif
 
 %files doc
@@ -438,6 +503,9 @@ rm -rf %{buildroot}
 /etc/init.d/mlnx-en.d
 %if "%{WITH_SYSTEMD}" == "1"
 %{_unitdir}/mlnx-en.d.service
+%endif
+%if "%{XENSERVER65}" == "1"
+%config(noreplace) /etc/modprobe.d/mlnx_en.conf
 %endif
 
 %changelog

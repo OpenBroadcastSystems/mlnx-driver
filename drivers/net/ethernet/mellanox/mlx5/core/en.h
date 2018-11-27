@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2015-2016, Mellanox Technologies. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -34,116 +34,178 @@
 
 #include <linux/if_vlan.h>
 #include <linux/etherdevice.h>
-#ifdef HAVE_TIMECOUNTER_H
 #include <linux/timecounter.h>
-#else
 #include <linux/clocksource.h>
+#include <linux/net_tstamp.h>
+#if defined(HAVE_NDO_SET_TX_MAXRATE) || defined (HAVE_NDO_SET_TX_MAXRATE_EXTENDED) || defined(HAVE_TC_FLOWER_OFFLOAD)
+#include <linux/hashtable.h>
 #endif
 #if defined (HAVE_PTP_CLOCK_INFO) && (defined (CONFIG_PTP_1588_CLOCK) || defined(CONFIG_PTP_1588_CLOCK_MODULE))
 #include <linux/ptp_clock_kernel.h>
 #endif
-#include <linux/net_tstamp.h>
-#ifdef HAVE_NDO_SET_TX_MAXRATE
-#include <linux/hashtable.h>
-#endif
+#include <linux/crash_dump.h>
 #include <linux/mlx5/driver.h>
-#include <linux/mlx5/device.h>
 #include <linux/mlx5/qp.h>
 #include <linux/mlx5/cq.h>
+#include <linux/mlx5/port.h>
+#include <linux/mlx5/vport.h>
 #include <linux/mlx5/transobj.h>
+#include <linux/mlx5/fs.h>
+#ifdef HAVE_TC_FLOWER_OFFLOAD
+#include <linux/rhashtable.h>
+#endif
+#ifdef CONFIG_NET_SWITCHDEV
+#include <net/switchdev.h>
+#endif
+#include "wq.h"
+#include "mlx5_core.h"
+#include "en_stats.h"
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
 #include <linux/inet_lro.h>
 #else
 #include <net/ip.h>
 #endif
 
-#include "linux/mlx5/vport.h"
-#include "wq.h"
-#include "mlx5_core.h"
-#include "en_stats.h"
-#include <linux/mlx5/fs.h>
+#define MLX5_SET_CFG(p, f, v) MLX5_SET(create_flow_group_in, p, f, v)
 
+#define MLX5E_ETH_HARD_MTU (ETH_HLEN + VLAN_HLEN + ETH_FCS_LEN)
+
+#define MLX5E_HW2SW_MTU(priv, hwmtu) ((hwmtu) - ((priv)->hard_mtu))
+#define MLX5E_SW2HW_MTU(priv, swmtu) ((swmtu) + ((priv)->hard_mtu))
+
+#define MLX5E_MAX_PRIORITY      8
+#define MLX5E_MAX_DSCP          64
 #define MLX5E_MAX_NUM_TC	8
-#define MLX5E_MAX_NUM_PRIO	8
-#define MLX5E_MAX_MTU		9600
-#define MXL5_HW_MIN_MTU		64
-#define MXL5E_MIN_MTU		(MXL5_HW_MIN_MTU + ETH_FCS_LEN)
+#define MLX5E_MIN_NUM_TC	0
 
-#define MLX5E_PARAMS_MINIMUM_LOG_SQ_SIZE                0x7
+#define MLX5_RX_HEADROOM NET_SKB_PAD
+#define MLX5_SKB_FRAG_SZ(len)	(SKB_DATA_ALIGN(len) +	\
+				 SKB_DATA_ALIGN(sizeof(struct skb_shared_info)))
+#define MLX5E_LOG_MAX_RX_WQE_BULK	\
+	(ilog2(PAGE_SIZE / roundup_pow_of_two(MLX5_SKB_FRAG_SZ(MLX5_RX_HEADROOM))))
+
+#define MLX5E_PARAMS_MINIMUM_LOG_SQ_SIZE                0x6
 #define MLX5E_PARAMS_DEFAULT_LOG_SQ_SIZE                0xa
 #define MLX5E_PARAMS_MAXIMUM_LOG_SQ_SIZE                0xd
-#define MLX5E_PARAMS_MINIMUM_LOG_STRIDING_RQ_SIZE	0x1
-#define MLX5E_PARAMS_DEFAULT_LOG_STRIDING_RQ_SIZE	0x4
-#define MLX5E_PARAMS_MAXIMUM_LOG_STRIDING_RQ_SIZE	0x7
-#define MLX5E_PARAMS_DEFAULT_LOG_WQE_STRIDE_SIZE	0x1
-#define MLX5E_PARAMS_DEFAULT_LOG_WQE_NUM_STRIDES	0x1
-#define MLX5E_PARAMS_HW_NUM_STRIDES_BASIC_VAL		512
-#define MLX5E_PARAMS_HW_STRIDE_SIZE_BASIC_VAL		64
-#define MLX5E_PARAMS_DEFAULT_MIN_STRIDING_RX_WQES	4
-#define MLX5E_PARAMS_STRIDING_MTU			1500
 
-#define MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE                0x7
+#define MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE (1 + MLX5E_LOG_MAX_RX_WQE_BULK)
 #define MLX5E_PARAMS_DEFAULT_LOG_RQ_SIZE                0xa
 #define MLX5E_PARAMS_MAXIMUM_LOG_RQ_SIZE                0xd
 
-#define MLX5E_PARAMS_DEFAULT_LRO_WQE_SZ                 (63 * 1024)
+#define MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE_MPW            0x2
+#define MLX5E_PARAMS_DEFAULT_LOG_RQ_SIZE_MPW            0x3
+#define MLX5E_PARAMS_MAXIMUM_LOG_RQ_SIZE_MPW            0x6
+
+#define MLX5_MPWRQ_MIN_LOG_STRIDE_SZ(mdev) \
+	(6 + MLX5_CAP_GEN(mdev, cache_line_128byte)) /* HW restriction */
+#define MLX5_MPWRQ_LOG_STRIDE_SZ(mdev, req) \
+	max_t(u32, MLX5_MPWRQ_MIN_LOG_STRIDE_SZ(mdev), req)
+#define MLX5_MPWRQ_DEF_LOG_STRIDE_SZ(mdev)       MLX5_MPWRQ_LOG_STRIDE_SZ(mdev, 6)
+#define MLX5_MPWRQ_CQE_CMPRS_LOG_STRIDE_SZ(mdev) MLX5_MPWRQ_LOG_STRIDE_SZ(mdev, 8)
+#define MLX5E_MPWQE_STRIDE_SZ(mdev, cqe_cmprs) \
+	(cqe_cmprs ? MLX5_MPWRQ_CQE_CMPRS_LOG_STRIDE_SZ(mdev) : \
+	MLX5_MPWRQ_DEF_LOG_STRIDE_SZ(mdev))
+
+#define MLX5_MPWRQ_LOG_WQE_SZ			18
+#define MLX5_MPWRQ_WQE_PAGE_ORDER  (MLX5_MPWRQ_LOG_WQE_SZ - PAGE_SHIFT > 0 ? \
+				    MLX5_MPWRQ_LOG_WQE_SZ - PAGE_SHIFT : 0)
+#define MLX5_MPWRQ_PAGES_PER_WQE		BIT(MLX5_MPWRQ_WQE_PAGE_ORDER)
+
+#define MLX5_MTT_OCTW(npages) (ALIGN(npages, 8) / 2)
+#define MLX5E_REQUIRED_MTTS(wqes)		\
+	(wqes * ALIGN(MLX5_MPWRQ_PAGES_PER_WQE, 8))
+#define MLX5E_VALID_NUM_MTTS(num_mtts) (MLX5_MTT_OCTW(num_mtts) - 1 <= U16_MAX)
+
+#define MLX5_UMR_ALIGN				(2048)
+#define MLX5_RX_MAX_HEAD (256)
+
+#define MLX5E_PARAMS_DEFAULT_LRO_WQE_SZ                 (64 * 1024)
 #define MLX5E_DEFAULT_LRO_TIMEOUT                       32
 #define MLX5E_LRO_TIMEOUT_ARR_SIZE                      4
 
 #define MLX5E_PARAMS_DEFAULT_RX_CQ_MODERATION_USEC      0x10
-#define MLX5E_PARAMS_DEFAULT_RX_CQ_MODERATION_USEC_FROM_CQE	0x8
+#define MLX5E_PARAMS_DEFAULT_RX_CQ_MODERATION_USEC_FROM_CQE 0x3
 #define MLX5E_PARAMS_DEFAULT_RX_CQ_MODERATION_PKTS      0x20
 #define MLX5E_PARAMS_DEFAULT_TX_CQ_MODERATION_USEC      0x10
+#define MLX5E_PARAMS_DEFAULT_TX_CQ_MODERATION_USEC_FROM_CQE 0x10
 #define MLX5E_PARAMS_DEFAULT_TX_CQ_MODERATION_PKTS      0x20
 #define MLX5E_PARAMS_DEFAULT_MIN_RX_WQES                0x80
+#define MLX5E_PARAMS_DEFAULT_MIN_RX_WQES_MPW            0x2
 
-#define MLX5E_RSS_TOEPLITZ_KEY_SIZE	MLX5_FLD_SZ_BYTES(tirc, \
-							  rx_hash_toeplitz_key)
 #define MLX5E_LOG_INDIR_RQT_SIZE       0x7
 #define MLX5E_INDIR_RQT_SIZE           BIT(MLX5E_LOG_INDIR_RQT_SIZE)
+#define MLX5E_MIN_NUM_CHANNELS         0x1
 #define MLX5E_MAX_NUM_CHANNELS         (MLX5E_INDIR_RQT_SIZE >> 1)
 #define MLX5E_MAX_NUM_SQS              (MLX5E_MAX_NUM_CHANNELS * MLX5E_MAX_NUM_TC)
-#ifdef HAVE_NDO_SET_TX_MAXRATE
-#define MLX5E_MAX_RL_QUEUES            2048
+
+#ifdef CONFIG_MLX5_EN_SPECIAL_SQ
+#define MLX5E_MAX_RL_QUEUES            512
 #else
 #define MLX5E_MAX_RL_QUEUES            0
 #endif
+
 #define MLX5E_TX_CQ_POLL_BUDGET        128
 #define MLX5E_UPDATE_STATS_INTERVAL    200 /* msecs */
-#define MLX5E_SQ_BF_BUDGET             16
-#define MLX5E_SERVICE_TASK_DELAY       (HZ / 4)
+#define MLX5E_SQ_RECOVER_MIN_INTERVAL  500 /* msecs */
 
-#define MLX5E_INDICATE_WQE_ERR	       0xffff
-#define MLX5E_MSG_LEVEL                NETIF_MSG_LINK
+#define MLX5E_ICOSQ_MAX_WQEBBS \
+	(DIV_ROUND_UP(sizeof(struct mlx5e_umr_wqe), MLX5_SEND_WQE_BB))
+
+#define MLX5E_XDP_MIN_INLINE (ETH_HLEN + VLAN_HLEN)
+#define MLX5E_XDP_TX_DS_COUNT \
+	((sizeof(struct mlx5e_tx_wqe) / MLX5_SEND_WQE_DS) + 1 /* SG DS */)
+
+#define MLX5E_NUM_MAIN_GROUPS 9
+
+#define MLX5E_MSG_LEVEL			NETIF_MSG_LINK
 
 #define mlx5e_dbg(mlevel, priv, format, ...)                    \
 do {                                                            \
-	if (NETIF_MSG_##mlevel & (priv)->msg_level)             \
+	if (NETIF_MSG_##mlevel & (priv)->msglevel)              \
 		netdev_warn(priv->netdev, format,               \
 			    ##__VA_ARGS__);                     \
 } while (0)
 
-#define MLX5_SET_CFG(p, f, v) MLX5_SET(create_flow_group_in, p, f, v)
 
-#if !defined(HAVE_NETDEV_EXTENDED_HW_FEATURES)     && \
-    !defined(HAVE_NETDEV_OPS_EXT_NDO_FIX_FEATURES) && \
-    !defined(HAVE_NETDEV_OPS_EXT_NDO_SET_FEATURES)
-#define LEGACY_ETHTOOL_OPS
-#endif
+static inline u16 mlx5_min_rx_wqes(int wq_type, u32 wq_size)
+{
+	switch (wq_type) {
+	case MLX5_WQ_TYPE_LINKED_LIST_STRIDING_RQ:
+		return min_t(u16, MLX5E_PARAMS_DEFAULT_MIN_RX_WQES_MPW,
+			     wq_size / 2);
+	default:
+		return min_t(u16, MLX5E_PARAMS_DEFAULT_MIN_RX_WQES,
+			     wq_size / 2);
+	}
+}
 
-#if !(defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED))
-/* Minimum packet number till arming the CQ */
-#define MLX5_EN_MIN_RX_ARM     2097152
-#endif
+static inline int mlx5_min_log_rq_size(int wq_type)
+{
+	switch (wq_type) {
+	case MLX5_WQ_TYPE_LINKED_LIST_STRIDING_RQ:
+		return MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE_MPW;
+	default:
+		return MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE;
+	}
+}
 
-enum {
-	MLX5E_LINK_SPEED,
-	MLX5E_LINK_STATE,
-	MLX5E_HEALTH_INFO,
-	MLX5E_LOOPBACK,
-	MLX5E_INTERRUPT,
-	MLX5E_NUM_SELF_TEST,
-};
+static inline int mlx5_max_log_rq_size(int wq_type)
+{
+	switch (wq_type) {
+	case MLX5_WQ_TYPE_LINKED_LIST_STRIDING_RQ:
+		return MLX5E_PARAMS_MAXIMUM_LOG_RQ_SIZE_MPW;
+	default:
+		return MLX5E_PARAMS_MAXIMUM_LOG_RQ_SIZE;
+	}
+}
+
+static inline int mlx5e_get_max_num_channels(struct mlx5_core_dev *mdev)
+{
+	return is_kdump_kernel() ?
+		MLX5E_MIN_NUM_CHANNELS :
+		min_t(int, mdev->priv.eq_table.num_comp_vectors,
+		      MLX5E_MAX_NUM_CHANNELS);
+}
 
 enum {
 	MLX5E_CON_PROTOCOL_802_1_RP,
@@ -152,126 +214,183 @@ enum {
 	MLX5E_CONG_PROTOCOL_NUM,
 };
 
-#define HEADER_COPY_SIZE		(128 - NET_IP_ALIGN)
-#define MLX5E_LOOPBACK_TEST_PAYLOAD	(HEADER_COPY_SIZE - ETH_HLEN)
+struct mlx5e_tx_wqe {
+	struct mlx5_wqe_ctrl_seg ctrl;
+	struct mlx5_wqe_eth_seg  eth;
+};
 
+struct mlx5e_rx_wqe_ll {
+	struct mlx5_wqe_srq_next_seg  next;
+	struct mlx5_wqe_data_seg      data[0];
+};
+
+struct mlx5e_rx_wqe_cyc {
+	struct mlx5_wqe_data_seg      data[0];
+};
+
+struct mlx5e_umr_wqe {
+	struct mlx5_wqe_ctrl_seg       ctrl;
+	struct mlx5_wqe_umr_ctrl_seg   uctrl;
+	struct mlx5_mkey_seg           mkc;
+	struct mlx5_wqe_data_seg       data;
+};
+
+extern const char mlx5e_self_tests[][ETH_GSTRING_LEN];
+
+static const char mlx5e_priv_flags[][ETH_GSTRING_LEN] = {
+	"rx_cqe_moder",
+	"tx_cqe_moder",
+	"rx_cqe_compress",
+	"sniffer",
+	"dropless_rq",
+	"per_channel_stats",
+#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
+	"hw_lro",
+#endif
+};
+
+enum mlx5e_priv_flag {
+	MLX5E_PFLAG_RX_CQE_BASED_MODER = (1 << 0),
+	MLX5E_PFLAG_TX_CQE_BASED_MODER = (1 << 1),
+	MLX5E_PFLAG_RX_CQE_COMPRESS = (1 << 2),
+	MLX5E_PFLAG_SNIFFER = (1 << 3),
+	MLX5E_PFLAG_DROPLESS_RQ = (1 << 4),
+	MLX5E_PFLAG_PER_CH_STATS = (1 << 5),
+#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
+	MLX5E_PFLAG_HWLRO = (1 << 6),
+#endif
+};
+
+#define MLX5E_SET_PFLAG(params, pflag, enable)			\
+	do {							\
+		if (enable)					\
+			(params)->pflags |= (pflag);		\
+		else						\
+			(params)->pflags &= ~(pflag);		\
+	} while (0)
+
+#define MLX5E_GET_PFLAG(params, pflag) (!!((params)->pflags & (pflag)))
+
+#ifdef HAVE_IEEE_DCBNL_ETS
+#ifdef CONFIG_MLX5_CORE_EN_DCB
 #define MLX5E_MAX_BW_ALLOC 100 /* Max percentage of BW allocation */
-#define MLX5E_MIN_BW_ALLOC 1   /* Min percentage of BW allocation */
+#endif
+#endif
+
+struct mlx5e_cq_moder {
+	u16 usec;
+	u16 pkts;
+	u8 cq_period_mode;
+};
 
 struct mlx5e_params {
 	u8  log_sq_size;
+	u8  rq_wq_type;
 	u8  log_rq_size;
 	u16 num_channels;
-	u8  default_vlan_prio;
 	u8  num_tc;
+#ifdef CONFIG_MLX5_EN_SPECIAL_SQ
 	u16 num_rl_txqs;
-	u16 rx_cq_moderation_usec;
-	u16 rx_cq_moderation_pkts;
-	u16 tx_cq_moderation_usec;
-	u16 tx_cq_moderation_pkts;
-	u16 min_rx_wqes;
+#endif
+	bool rx_cqe_compress_def;
+	struct mlx5e_cq_moder rx_cq_moderation;
+	struct mlx5e_cq_moder tx_cq_moderation;
 	bool lro_en;
 	u32 lro_wqe_sz;
+	u16 tx_max_inline;
+	u8  tx_min_inline_mode;
 	u8  rss_hfunc;
-	u8 toeplitz_hash_key[MLX5E_RSS_TOEPLITZ_KEY_SIZE];
+	u8  toeplitz_hash_key[40];
 	u32 indirection_rqt[MLX5E_INDIR_RQT_SIZE];
+	bool vlan_strip_disable;
+	bool scatter_fcs_en;
+	bool rx_am_enabled;
 	u32 lro_timeout;
+	u32 pflags;
+#if defined(HAVE_VLAN_GRO_RECEIVE) || defined(HAVE_VLAN_HWACCEL_RX)
+	struct vlan_group          *vlan_grp;
+#endif
+#ifdef HAVE_NETDEV_BPF
+	struct bpf_prog *xdp_prog;
+#endif
+#ifdef HAVE_GET_SET_DUMP
+	struct {
+		__u32 flag;
+		u32 mst_size;
+	}                          dump;
+#endif
+};
+
+#ifdef HAVE_IEEE_DCBNL_ETS
+#ifdef CONFIG_MLX5_CORE_EN_DCB
+struct mlx5e_cee_config {
+	/* bw pct for priority group */
+	u8                         pg_bw_pct[CEE_DCBX_MAX_PGS];
+	u8                         prio_to_pg_map[CEE_DCBX_MAX_PRIO];
+	bool                       pfc_setting[CEE_DCBX_MAX_PRIO];
+	bool                       pfc_enable;
 };
 
 enum {
-	MLX5E_RQ_STATE_POST_WQES_ENABLE,
+	MLX5_DCB_CHG_RESET,
+	MLX5_DCB_NO_CHG,
+	MLX5_DCB_CHG_NO_RESET,
 };
 
-struct mlx5e_rq;
-struct mlx5e_rx_wqe;
-struct mlx5e_cq;
-typedef void (*mlx5e_clean_rq_fn)(struct mlx5e_rq *rq);
-typedef int (*mlx5e_alloc_rx_wqe_fn)(struct mlx5e_rq *rq,
-				     struct mlx5e_rx_wqe *wqe, u16 ix);
-/* poll rx cq is depend on the type of the RQ */
-typedef struct sk_buff* (*mlx5e_poll_rx_cq_fn)(struct mlx5_cqe64 *cqe,
-						   struct mlx5e_rq *rq,
-						   u16 *bytes_recv,
-						   struct mlx5e_rx_wqe **ret_wqe,
-						   __be16 *ret_wqe_id_be);
-typedef bool (*mlx5e_is_rx_pop_fn)(struct mlx5e_rq *rq);
+struct mlx5e_dcbx {
+	enum mlx5_dcbx_oper_mode   mode;
+	struct mlx5e_cee_config    cee_cfg; /* pending configuration */
+	u8                         dscp_app_cnt;
 
-struct mlx5e_rx_wqe_info {
-	struct page	     *page;
-	dma_addr_t	     dma_addr;
-	u16		     used_strides;
+	/* The only setting that cannot be read from FW */
+	u8                         tc_tsa[IEEE_8021QAZ_MAX_TCS];
+	u8                         cap;
+
+	/* Buffer configuration */
+	bool                       manual_buffer;
+	u32                        cable_len;
+	u32                        xoff;
 };
+
+struct mlx5e_dcbx_dp {
+	u8                         dscp2prio[MLX5E_MAX_DSCP];
+	u8                         trust_state;
+};
+#endif
+#endif
+
+enum {
+	MLX5E_RQ_STATE_ENABLED,
+	MLX5E_RQ_STATE_AM,
+	MLX5E_RQ_STATE_CACHE_REDUCE_PENDING,
+};
+
+#define MLX5E_TEST_BIT(state, nr) (state & BIT(nr))
 
 struct mlx5e_cq {
 	/* data path - accessed per cqe */
 	struct mlx5_cqwq           wq;
 
 	/* data path - accessed per napi poll */
+	u16                        event_ctr;
 	struct napi_struct        *napi;
 	struct mlx5_core_cq        mcq;
 	struct mlx5e_channel      *channel;
 
-	/* control */
-	struct mlx5_wq_ctrl        wq_ctrl;
-} ____cacheline_aligned_in_smp;
-
-#ifdef HAVE_GET_SET_PRIV_FLAGS
-static const char mlx5e_priv_flags[][ETH_GSTRING_LEN] = {
-	/* to be added in future commits */
-	"hw_lro",
-	"sniffer",
-	"dcbx_handle_by_fw",
-	"qos_with_dcbx_by_fw",
-};
-#endif
-
-#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
-#define IS_HW_LRO(priv) \
-	(priv->params.lro_en && (priv->pflags & MLX5E_PRIV_FLAG_HWLRO))
-#define IS_SW_LRO(priv) \
-	(priv->params.lro_en && !(priv->pflags & MLX5E_PRIV_FLAG_HWLRO))
-
-/* SW LRO defines for MLX5 */
-#define MLX5E_LRO_MAX_DESC	32
-struct mlx5e_sw_lro {
-	struct net_lro_mgr	lro_mgr;
-	struct net_lro_desc	lro_desc[MLX5E_LRO_MAX_DESC];
-};
-#endif
-
-struct mlx5e_rq {
-	/* data path */
-	struct mlx5_wq_ll      wq;
-	u32                    wqe_sz;
-	struct sk_buff       **skb;
-	struct mlx5e_rx_wqe_info *wqe_info;
-	u8		       page_order;
-	u16		       num_of_strides_in_wqe;
-	u16		       stride_size;
-	u16		       current_wqe;
-	mlx5e_alloc_rx_wqe_fn  alloc_wqe;
-	mlx5e_poll_rx_cq_fn    mlx5e_poll_specific_rx_cq;
-	mlx5e_is_rx_pop_fn     is_poll;
-	struct device         *pdev;
-	struct net_device     *netdev;
-	struct mlx5e_rq_stats  stats;
-	struct mlx5e_cq        cq;
-
-	unsigned long          state;
-	int                    ix;
-#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
-	struct mlx5e_sw_lro sw_lro;
-#endif
+	/* cqe decompression */
+	struct mlx5_cqe64          title;
+	struct mlx5_mini_cqe8      mini_arr[MLX5_MINI_CQE_ARRAY_SIZE];
+	u8                         mini_arr_idx;
+	u16                        decmprs_left;
+	u16                        decmprs_wqe_counter;
 
 	/* control */
-	struct mlx5_wq_ctrl    wq_ctrl;
-	u32                    rqn;
-	struct mlx5e_channel  *channel;
-	enum rq_type	       rq_type;
-	mlx5e_clean_rq_fn      clean_rq;
+	struct mlx5_core_dev      *mdev;
+	struct mlx5_frag_wq_ctrl   wq_ctrl;
 } ____cacheline_aligned_in_smp;
 
 struct mlx5e_tx_wqe_info {
+	struct sk_buff *skb;
 	u32 num_bytes;
 	u8  num_wqebbs;
 	u8  num_dma;
@@ -289,18 +408,25 @@ struct mlx5e_sq_dma {
 };
 
 enum {
-	MLX5E_SQ_STATE_WAKE_TXQ_ENABLE,
-	MLX5E_SQ_TX_TIMEOUT,
+	MLX5E_SQ_STATE_ENABLED,
+	MLX5E_SQ_STATE_IPSEC,
+	MLX5E_SQ_STATE_RECOVERING,
 };
 
+struct mlx5e_sq_wqe_info {
+	u8  opcode;
+};
+
+#if defined (CONFIG_MLX5_EN_SPECIAL_SQ) && (defined(HAVE_NDO_SET_TX_MAXRATE) || defined (HAVE_NDO_SET_TX_MAXRATE_EXTENDED))
 struct mlx5e_sq_flow_map {
 	struct hlist_node hlist;
 	u32               dst_ip;
 	u16               dst_port;
 	u16               queue_index;
 };
+#endif
 
-struct mlx5e_sq {
+struct mlx5e_txqsq {
 	/* data path */
 
 	/* dirtied @completion */
@@ -310,75 +436,327 @@ struct mlx5e_sq {
 	/* dirtied @xmit */
 	u16                        pc ____cacheline_aligned_in_smp;
 	u32                        dma_fifo_pc;
-	u16                        bf_offset;
-	u16                        prev_cc;
-	u8                         bf_budget;
 	struct mlx5e_sq_stats      stats;
 
 	struct mlx5e_cq            cq;
 
-	/* pointers to per packet info: write@xmit, read@completion */
-	struct sk_buff           **skb;
-	struct mlx5e_sq_dma       *dma_fifo;
-	struct mlx5e_tx_wqe_info  *wqe_info;
+	/* write@xmit, read@completion */
+	struct {
+		struct mlx5e_sq_dma       *dma_fifo;
+		struct mlx5e_tx_wqe_info  *wqe_info;
+	} db;
 
 	/* read only */
 	struct mlx5_wq_cyc         wq;
 	u32                        dma_fifo_mask;
 	void __iomem              *uar_map;
-	void __iomem              *uar_bf_map;
 	struct netdev_queue       *txq;
 	u32                        sqn;
-	u16                        bf_buf_size;
 	u16                        max_inline;
+	u8                         min_inline_mode;
 	u16                        edge;
 	struct device             *pdev;
+	__be32                     mkey_be;
+	unsigned long              state;
+	struct hwtstamp_config    *tstamp;
+	struct mlx5_clock         *clock;
+
+	/* control path */
+	struct mlx5_wq_ctrl        wq_ctrl;
+	struct mlx5e_channel      *channel;
+	int                        txq_ix;
+	u32                        rate_limit;
+	struct mlx5e_txqsq_recover {
+		struct work_struct         recover_work;
+		u64                        last_recover;
+	} recover;
+
+#if defined (CONFIG_MLX5_EN_SPECIAL_SQ) && (defined(HAVE_NDO_SET_TX_MAXRATE) || defined (HAVE_NDO_SET_TX_MAXRATE_EXTENDED))
+	struct mlx5e_sq_flow_map   flow_map;
+#endif
+} ____cacheline_aligned_in_smp;
+
+struct mlx5e_xdpsq {
+	/* data path */
+
+	/* dirtied @rx completion */
+	u16                        cc;
+	u16                        pc;
+
+	struct mlx5e_cq            cq;
+
+	/* write@xmit, read@completion */
+	struct {
+		struct mlx5e_dma_info     *di;
+		bool                       doorbell;
+	} db;
+
+	/* read only */
+	struct mlx5_wq_cyc         wq;
+	void __iomem              *uar_map;
+	u32                        sqn;
+	struct device             *pdev;
+	__be32                     mkey_be;
+	u8                         min_inline_mode;
+	unsigned long              state;
+
+	/* control path */
+	struct mlx5_wq_ctrl        wq_ctrl;
+	struct mlx5e_channel      *channel;
+} ____cacheline_aligned_in_smp;
+
+struct mlx5e_icosq {
+	/* data path */
+
+	/* dirtied @xmit */
+	u16                        pc ____cacheline_aligned_in_smp;
+
+	struct mlx5e_cq            cq;
+
+	/* write@xmit, read@completion */
+	struct {
+		struct mlx5e_sq_wqe_info *ico_wqe;
+	} db;
+
+	/* read only */
+	struct mlx5_wq_cyc         wq;
+	void __iomem              *uar_map;
+	u32                        sqn;
+	u16                        edge;
 	__be32                     mkey_be;
 	unsigned long              state;
 
 	/* control path */
 	struct mlx5_wq_ctrl        wq_ctrl;
-	struct mlx5_uar            uar;
 	struct mlx5e_channel      *channel;
-	int                        tc;
-	int                        tx_ind;
-	u32                        rate_limit;
-	struct mlx5e_sq_flow_map   flow_map;
 } ____cacheline_aligned_in_smp;
 
-static inline bool mlx5e_sq_has_room_for(struct mlx5e_sq *sq, u16 n)
+static inline bool
+mlx5e_wqc_has_room_for(struct mlx5_wq_cyc *wq, u16 cc, u16 pc, u16 n)
 {
-	return (((sq->wq.sz_m1 & (sq->cc - sq->pc)) >= n) ||
-		(sq->cc  == sq->pc));
+	return (((wq->sz_m1 & (cc - pc)) >= n) || (cc == pc));
 }
 
+struct mlx5e_dma_info {
+	struct page	*page;
+	dma_addr_t	addr;
+};
+
+struct mlx5e_wqe_frag_info {
+	struct mlx5e_dma_info *di;
+	u32 offset;
+	bool last_in_page;
+};
+
+struct mlx5e_umr_dma_info {
+	__be64                *mtt;
+	dma_addr_t             mtt_addr;
+	struct mlx5e_dma_info  dma_info[MLX5_MPWRQ_PAGES_PER_WQE];
+	struct mlx5e_umr_wqe   wqe;
+};
+
+struct mlx5e_mpw_info {
+	struct mlx5e_umr_dma_info umr;
+	u16 consumed_strides;
+};
+
+#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
+#define IS_HW_LRO(params) \
+	((params)->lro_en && ((params)->pflags & MLX5E_PFLAG_HWLRO))
+#define IS_SW_LRO(params) \
+	((params)->lro_en && !((params)->pflags & MLX5E_PFLAG_HWLRO))
+
+/* SW LRO defines for MLX5 */
+#define MLX5E_LRO_MAX_DESC	32
+struct mlx5e_sw_lro {
+	struct net_lro_mgr	lro_mgr;
+	struct net_lro_desc	lro_desc[MLX5E_LRO_MAX_DESC];
+};
+#endif
+
+struct mlx5e_rx_am_stats {
+	int ppms; /* packets per msec */
+	int bpms; /* bytes per msec */
+	int epms; /* events per msec */
+};
+
+struct mlx5e_rx_am_sample {
+	ktime_t	time;
+	u32	pkt_ctr;
+	u32	byte_ctr;
+	u16	event_ctr;
+};
+
+struct mlx5e_rx_am { /* Adaptive Moderation */
+	u8					state;
+	struct mlx5e_rx_am_stats		prev_stats;
+	struct mlx5e_rx_am_sample		start_sample;
+	struct work_struct			work;
+	u8					profile_ix;
+	u8					mode;
+	u8					tune_state;
+	u8					steps_right;
+	u8					steps_left;
+	u8					tired;
+};
+
+#define MLX5E_MAX_RX_FRAGS 4
+
+#define MLX5E_PAGE_CACHE_LOG_MAX_RQ_MULT	4
+#define MLX5E_PAGE_CACHE_REDUCE_WORK_INTERVAL	200 /* msecs */
+#define MLX5E_PAGE_CACHE_REDUCE_GRACE_PERIOD	1000 /* msecs */
+#define MLX5E_PAGE_CACHE_REDUCE_SUCCESSIVE_CNT	5
+
+struct mlx5e_page_cache_reduce {
+	struct delayed_work reduce_work;
+	u32 successive;
+	unsigned long next_ts;
+	unsigned long graceful_period;
+	unsigned long delay;
+
+	struct mlx5e_dma_info *pending;
+	u32 npages;
+};
+
+struct mlx5e_page_cache {
+	struct mlx5e_dma_info *page_cache;
+	int head;
+	u32 sz;
+	u32 lrs; /* least recently sampled */
+	u8 log_min_sz;
+	u8 log_max_sz;
+	struct mlx5e_page_cache_reduce reduce;
+};
+
+struct mlx5e_rq;
+typedef void (*mlx5e_fp_handle_rx_cqe)(struct mlx5e_rq*, struct mlx5_cqe64*);
+typedef struct sk_buff *
+(*mlx5e_fp_skb_from_cqe)(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
+			 struct mlx5e_wqe_frag_info *wi, u32 cqe_bcnt);
+typedef bool (*mlx5e_fp_post_rx_wqes)(struct mlx5e_rq *rq);
+typedef void (*mlx5e_fp_dealloc_wqe)(struct mlx5e_rq*, u16);
+
+enum mlx5e_rq_flag {
+	MLX5E_RQ_FLAG_XDP_XMIT = BIT(0),
+};
+
+struct mlx5e_rq_frag_info {
+	int frag_size;
+	int frag_stride;
+};
+
+struct mlx5e_rq {
+	/* data path */
+	union {
+		struct {
+			struct mlx5_wq_cyc    wq;
+			struct mlx5e_rq_frag_info frag_info[MLX5E_MAX_RX_FRAGS];
+			struct mlx5e_wqe_frag_info *frags;
+			struct mlx5e_dma_info *di;
+			mlx5e_fp_skb_from_cqe skb_from_cqe;
+			u8 num_frags;
+			u8 log_num_frags;
+			u8 wqe_bulk;
+		} wqe;
+		struct {
+			struct mlx5_wq_ll      wq;
+			struct mlx5e_mpw_info *info;
+			void                  *mtt_no_align;
+			u16                    num_strides;
+			u8                     log_stride_sz;
+			bool                   umr_in_progress;
+		} mpwqe;
+	};
+	struct {
+		u16            headroom;
+		u8             map_dir;   /* dma map direction */
+	} buff;
+
+	struct mlx5e_channel  *channel;
+	struct device         *pdev;
+	struct net_device     *netdev;
+	struct mlx5e_rq_stats  stats;
+	struct mlx5e_cq        cq;
+	struct mlx5e_page_cache page_cache;
+	struct hwtstamp_config *tstamp;
+	struct mlx5_clock      *clock;
+
+	mlx5e_fp_handle_rx_cqe handle_rx_cqe;
+	mlx5e_fp_post_rx_wqes  post_wqes;
+	mlx5e_fp_dealloc_wqe   dealloc_wqe;
+
+	unsigned long          state;
+	int                    ix;
+
+	struct mlx5e_rx_am     am; /* Adaptive Moderation */
+
+	/* XDP */
+#ifdef HAVE_NETDEV_BPF
+	struct bpf_prog       *xdp_prog;
+#endif
+	struct mlx5e_xdpsq     xdpsq;
+	DECLARE_BITMAP(flags, 8);
+
+#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
+	struct mlx5e_sw_lro sw_lro;
+#endif
+
+	/* control */
+	struct mlx5_wq_ctrl    wq_ctrl;
+	__be32                 mkey_be;
+	u8                     wq_type;
+	u32                    rqn;
+	struct mlx5_core_dev  *mdev;
+	struct mlx5_core_mkey  umr_mkey;
+} ____cacheline_aligned_in_smp;
+
+#ifndef HAVE_NAPI_COMPLETE_DONE_RET_VALUE
 enum channel_flags {
 	MLX5E_CHANNEL_NAPI_SCHED = 1,
 };
+#endif
 
 struct mlx5e_channel {
 	/* data path */
 	struct mlx5e_rq            rq;
-	struct mlx5e_sq           *sq;
+	struct mlx5e_txqsq         sq[MLX5E_MAX_NUM_TC];
+#ifdef CONFIG_MLX5_EN_SPECIAL_SQ
+	struct mlx5e_txqsq         *special_sq;
+	u16			   num_special_sq;
+#endif
+	struct mlx5e_icosq         icosq;   /* internal control operations */
+#ifdef HAVE_NETDEV_BPF
+	bool                       xdp;
+#endif
 	struct napi_struct         napi;
 	struct device             *pdev;
 	struct net_device         *netdev;
 	__be32                     mkey_be;
 	u8                         num_tc;
+#ifndef HAVE_NAPI_COMPLETE_DONE_RET_VALUE
 	unsigned long              flags;
-
-	/* data path - accessed per napi poll */
-	struct irq_desc           *irq_desc;
-#if !(defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED))
-	u32 tot_rx;
 #endif
+
+#if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
+	/* data path - accessed per napi poll */
+	struct irq_desc *irq_desc;
+#endif
+	struct mlx5e_ch_stats      stats;
+
 	/* control */
 	struct mlx5e_priv         *priv;
+	struct mlx5_core_dev      *mdev;
+	struct hwtstamp_config    *tstamp;
 	int                        ix;
-	int                        num_tx;
 	int                        cpu;
 
 	struct dentry             *dfs_root;
+};
+
+struct mlx5e_channels {
+	struct mlx5e_channel **c;
+	unsigned int           num;
+	struct mlx5e_params    params;
 };
 
 enum mlx5e_traffic_types {
@@ -393,90 +771,31 @@ enum mlx5e_traffic_types {
 	MLX5E_TT_IPV4,
 	MLX5E_TT_IPV6,
 	MLX5E_TT_ANY,
-	MLX5E_NUM_TT
+	MLX5E_NUM_TT,
+	MLX5E_NUM_INDIR_TIRS = MLX5E_TT_ANY,
 };
 
-static inline bool mlx5e_tunnel_stateless_supported(struct mlx5_core_dev *mdev)
-{
-	return (MLX5_CAP_ETH(mdev, tunnel_stateless_vxlan) ||
-		MLX5_CAP_ETH(mdev, tunnel_statless_gre));
-}
-
-enum {
-	MLX5E_RQT_SPREADING  = 0,
-	MLX5E_RQT_DEFAULT_RQ = 1,
-	MLX5E_NUM_RQT        = 2,
+enum mlx5e_tunnel_types {
+	MLX5E_TT_IPV4_GRE,
+	MLX5E_TT_IPV6_GRE,
+	MLX5E_NUM_TUNNEL_TT,
 };
 
 enum {
-	MLX5E_RQ_FLAG_SWLRO = (1 << 0),
-	MLX5E_PRIV_FLAGS_SNIFFER_EN = (1 << 1),
-	MLX5E_PRIV_FLAGS_DCBX_HANDLE_BY_FW   = (1 << 2),
-	MLX5E_PRIV_FLAGS_QOS_WITH_DCBX_BY_FW = (1 << 3),
+	MLX5E_STATE_ASYNC_EVENTS_ENABLED,
+	MLX5E_STATE_OPENED,
+	MLX5E_STATE_DESTROYING,
 };
 
-enum {
-	MAX_SNIFFER_FLOW_RULE_NUM = (FS_MAX_TYPES << 4),
-};
-
-enum mlx5e_sniffer_types {
-	MLX5E_SNIFFER_TX,
-	MLX5E_SNIFFER_RX,
-	MLX5E_LEFTOVERS_RX,
-	MLX5E_SNIFFER_NUM_TYPE,
-};
-
-struct mlx5_sniffer_rule_info {
-	struct mlx5_core_fs_mask *fg_mask;
-	u32 *fte_match_value;
-	int rule_type;
-};
-
-struct sniffer_work {
-	struct work_struct  work;
-	struct mlx5_sniffer_rule_info *rule_info;
-	struct mlx5e_priv  *priv;
-};
-
-struct mlx5e_sniffer_flow {
-	struct mlx5_flow_rule *rx_dst;
-	bool valid;
-	u8 ref_cnt;
-};
-
-struct mlx5e_flow_sniffer {
-	struct workqueue_struct *sniffer_wq;
-
-	struct mlx5_flow_table *rx_ft;
-	struct mlx5_flow_table *tx_ft;
-	struct mlx5_flow_table *leftovers_ft;
-	struct mlx5e_sniffer_flow flow_arr[MAX_SNIFFER_FLOW_RULE_NUM];
-	struct mlx5_flow_rule *tx_dst;
-	struct mlx5e_sniffer_flow leftovers_flow_arr[LEFTOVERS_RULE_NUM];
-	struct mlx5_flow_handler *bypass_event;
-};
-
-struct mlx5e_eth_ft_type {
-	struct mlx5_core_fs_dst *dst;
+struct mlx5e_vxlan_db {
+	spinlock_t			lock; /* protect vxlan table */
+	struct radix_tree_root		tree;
 };
 
 struct mlx5e_l2_rule {
-	u8			addr[ETH_ALEN + 2];
-	struct mlx5_flow_rule   *rule;
+	u8  addr[ETH_ALEN + 2];
+	struct mlx5_flow_handle *rule;
 };
-
-struct mlx5e_flow_vlan {
-	struct mlx5_core_fs_ft		*vlan_ft;
-	struct mlx5_core_fs_fg		*tagged_fg;
-	struct mlx5_core_fs_fg		*untagged_fg;
-};
-
-struct mlx5e_flow_main {
-	struct mlx5_core_fs_ft		*main_ft;
-	struct mlx5_core_fs_fg		*fg[9];
-};
-
-#define MLX5E_L2_ADDR_HASH_SIZE (1 << BITS_PER_BYTE)
 
 struct mlx5e_flow_table {
 	int num_groups;
@@ -484,63 +803,61 @@ struct mlx5e_flow_table {
 	struct mlx5_flow_group **g;
 };
 
+#define MLX5E_L2_ADDR_HASH_SIZE BIT(BITS_PER_BYTE)
+
+#ifdef HAVE_TC_FLOWER_OFFLOAD
+struct mlx5e_tc_table {
+	struct mlx5_flow_table		*t;
+
+	struct rhashtable_params        ht_params;
+	struct rhashtable               ht;
+
+#ifdef HAVE_TCF_PEDIT_TCFP_KEYS_EX
+	DECLARE_HASHTABLE(mod_hdr_tbl, 8);
+#endif
+};
+#endif
+
+struct mlx5e_vlan_table {
+	struct mlx5e_flow_table		ft;
+	DECLARE_BITMAP(active_cvlans, VLAN_N_VID);
+#ifdef HAVE_NETIF_F_HW_VLAN_STAG_RX
+	DECLARE_BITMAP(active_svlans, VLAN_N_VID);
+#endif
+	struct mlx5_flow_handle	*active_cvlans_rule[VLAN_N_VID];
+#ifdef HAVE_NETIF_F_HW_VLAN_STAG_RX
+	struct mlx5_flow_handle	*active_svlans_rule[VLAN_N_VID];
+#endif
+	struct mlx5_flow_handle	*untagged_rule;
+	struct mlx5_flow_handle	*any_cvlan_rule;
+	struct mlx5_flow_handle	*any_svlan_rule;
+	bool			cvlan_filter_disabled;
+};
+
 struct mlx5e_l2_table {
-	struct mlx5e_flow_table	   ft;
+	struct mlx5e_flow_table    ft;
 	struct hlist_head          netdev_uc[MLX5E_L2_ADDR_HASH_SIZE];
 	struct hlist_head          netdev_mc[MLX5E_L2_ADDR_HASH_SIZE];
-	struct mlx5e_l2_rule   broadcast;
-	struct mlx5e_l2_rule   allmulti;
-	struct mlx5e_l2_rule   promisc;
+	struct mlx5e_l2_rule	   broadcast;
+	struct mlx5e_l2_rule	   allmulti;
+	struct mlx5e_l2_rule	   promisc;
 	bool                       broadcast_enabled;
 	bool                       allmulti_enabled;
 	bool                       promisc_enabled;
 };
 
-enum {
-	MLX5E_STATE_ASYNC_EVENTS_ENABLE,
-	MLX5E_STATE_OPENED,
-};
-
-enum {
-	MLX5E_WOL_DISABLE	= 0,
-	MLX5E_WOL_SECURED_MAGIC = 1 << 1,
-	MLX5E_WOL_MAGIC		= 1 << 2,
-	MLX5E_WOL_ARP		= 1 << 3,
-	MLX5E_WOL_BROADCAST	= 1 << 4,
-	MLX5E_WOL_MULTICAST	= 1 << 5,
-	MLX5E_WOL_UNICAST	= 1 << 6,
-	MLX5E_WOL_PHY_ACTIVITY	= 1 << 7,
-};
-
-enum mlx5e_tunnel_rule_type {
-	MLX5E_TUNNEL_RULE_TYPE_VXLAN,
-};
-
-struct mlx5e_vlan_table {
-	struct mlx5e_flow_table ft;
-	unsigned long active_vlans[BITS_TO_LONGS(VLAN_N_VID)];
-	struct mlx5_flow_rule	*active_vlans_rule[VLAN_N_VID];
-	struct mlx5_flow_rule	*untagged_rule;
-	struct mlx5_flow_rule	*any_svlan_rule;
-	struct mlx5_flow_rule	*any_cvlan_rule;
-	bool			filter_disabled;
-};
-
-struct mlx5e_vxlan_db {
-	spinlock_t		lock;
-	struct radix_tree_root	tree;
-};
-
+/* L3/L4 traffic type classifier */
 struct mlx5e_ttc_table {
-	struct mlx5e_flow_table ft;
-	struct mlx5_flow_rule	*flow_rules[MLX5E_NUM_TT];
+	struct mlx5e_flow_table  ft;
+	struct mlx5_flow_handle	 *rules[MLX5E_NUM_TT];
+	struct mlx5_flow_handle  *tunnel_rules[MLX5E_NUM_TUNNEL_TT];
 };
 
 #define ARFS_HASH_SHIFT BITS_PER_BYTE
 #define ARFS_HASH_SIZE BIT(BITS_PER_BYTE)
 struct arfs_table {
 	struct mlx5e_flow_table  ft;
-	struct mlx5_flow_rule    *default_rule;
+	struct mlx5_flow_handle	 *default_rule;
 	struct hlist_head	 rules_hash[ARFS_HASH_SIZE];
 };
 
@@ -565,19 +882,56 @@ struct mlx5e_arfs_tables {
 enum {
 	MLX5E_VLAN_FT_LEVEL = 0,
 	MLX5E_L2_FT_LEVEL,
-	MLX5E_OUTER_TTC_FT_LEVEL,
+	MLX5E_TTC_FT_LEVEL,
 	MLX5E_INNER_TTC_FT_LEVEL,
 	MLX5E_ARFS_FT_LEVEL
 };
 
+struct mlx5e_ethtool_table {
+	struct mlx5_flow_table *ft;
+	int                    num_rules;
+};
+
+#define ETHTOOL_NUM_L3_L4_FTS 7
+#define ETHTOOL_NUM_L2_FTS 4
+
+struct mlx5e_ethtool_steering {
+	struct mlx5e_ethtool_table      l3_l4_ft[ETHTOOL_NUM_L3_L4_FTS];
+	struct mlx5e_ethtool_table      l2_ft[ETHTOOL_NUM_L2_FTS];
+	struct list_head                rules;
+	int                             tot_num_rules;
+};
+
+struct mlx5e_sniffer;
+
 struct mlx5e_flow_steering {
-	struct mlx5_flow_namespace	*ns;
-	struct mlx5e_vlan_table		vlan;
-	struct mlx5e_l2_table		l2;
-	struct mlx5e_ttc_table          outer_ttc;
-	struct mlx5e_ttc_table		inner_ttc;
+	struct mlx5_flow_namespace      *ns;
+	struct mlx5e_ethtool_steering   ethtool;
+#ifdef HAVE_TC_FLOWER_OFFLOAD
+	struct mlx5e_tc_table           tc;
+#endif
+	struct mlx5e_vlan_table         vlan;
+	struct mlx5e_l2_table           l2;
+	struct mlx5e_ttc_table          ttc;
+	struct mlx5e_ttc_table          inner_ttc;
 	struct mlx5e_arfs_tables        arfs;
-	struct mlx5e_flow_sniffer	sniffer;
+	struct mlx5e_sniffer            *sniffer;
+};
+
+struct mlx5e_rqt {
+	u32              rqtn;
+	bool		 enabled;
+};
+
+struct mlx5e_tir {
+	u32		  tirn;
+	struct mlx5e_rqt  rqt;
+	struct list_head  list;
+};
+
+enum {
+	MLX5E_TC_PRIO = 0,
+	MLX5E_NIC_PRIO
 };
 
 struct mlx5e_ecn_rp_attributes {
@@ -630,163 +984,105 @@ struct mlx5e_ecn_enable_ctx {
 	struct kobj_attribute	enable;
 };
 
-#define MLX5E_NIC_DEFAULT_PRIO	0
-
-#ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
-#define MLX5E_PRIV_FLAG_HWLRO (1<<0)
-#endif
-
-struct mlx5e_tstamp {
-	rwlock_t                   lock;
-	struct cyclecounter        cycles;
-	struct timecounter         clock;
-#if defined (HAVE_PTP_CLOCK_INFO) && (defined (CONFIG_PTP_1588_CLOCK) || defined(CONFIG_PTP_1588_CLOCK_MODULE))
-	struct ptp_clock          *ptp;
-	struct ptp_clock_info      ptp_info;
-#endif
-	struct hwtstamp_config     hwtstamp_config;
-	u32                        nominal_c_mult;
-	unsigned long              last_overflow_check;
-	unsigned long              overflow_period;
+struct mlx5e_delay_drop {
+	struct work_struct	work;
+	/* serialize setting of delay drop */
+	struct mutex		lock;
+	u32			usec_timeout;
+	bool			activate;
 };
-
-struct mlx5e_direct_tir {
-	u32              tirn;
-	u32              rqtn;
-};
-
-#ifdef HAVE_IEEE_DCBNL_ETS
-/* CEE DCBX std supported values */
-#define CEE_DCBX_MAX_PGS   8
-#define CEE_DCBX_MAX_PRIO  8
-
-struct mlx5e_cee_config {
-	/* bw pct for priority group */
-	u8                         pg_bw_pct[CEE_DCBX_MAX_PGS];
-	u8                         prio_to_pg_map[CEE_DCBX_MAX_PRIO];
-	bool                       pfc_setting[CEE_DCBX_MAX_PRIO];
-	bool                       pfc_enable;
-};
-
-struct mlx5e_dcbx {
-	enum mlx5_dcbx_oper_mode   mode;
-	struct mlx5e_cee_config    cee_cfg; /* pending configuration */
-
-	/* The only setting that cannot be read from FW */
-	u8                         tc_tsa[IEEE_8021QAZ_MAX_TCS];
-};
-#endif
 
 struct mlx5e_priv {
 	/* priv data path fields - start */
-	int                        default_vlan_prio;
-	struct mlx5e_sq            **txq_to_sq_map;
-	int tc_to_txq_map[MLX5E_MAX_NUM_CHANNELS][MLX5E_MAX_NUM_TC];
-#ifdef HAVE_NDO_SET_TX_MAXRATE
+	struct mlx5e_txqsq *txq2sq[MLX5E_MAX_NUM_CHANNELS * MLX5E_MAX_NUM_TC + MLX5E_MAX_RL_QUEUES];
+	int channel_tc2txq[MLX5E_MAX_NUM_CHANNELS][MLX5E_MAX_NUM_TC];
+#if defined (CONFIG_MLX5_EN_SPECIAL_SQ) && (defined(HAVE_NDO_SET_TX_MAXRATE) || defined (HAVE_NDO_SET_TX_MAXRATE_EXTENDED))
 	DECLARE_HASHTABLE(flow_map_hash, ilog2(MLX5E_MAX_RL_QUEUES));
 #endif
-#if defined HAVE_VLAN_GRO_RECEIVE || defined HAVE_VLAN_HWACCEL_RX
-	struct vlan_group          *vlan_grp;
+#if defined(CONFIG_MLX5_CORE_EN_DCB) && defined(HAVE_IEEE_DCBNL_ETS)
+	struct mlx5e_dcbx_dp       dcbx_dp;
 #endif
 	/* priv data path fields - end */
 
+	u32                        msglevel;
 	unsigned long              state;
 	struct mutex               state_lock; /* Protects Interface state */
-	struct mlx5_uar            cq_uar;
-	u32                        pdn;
-	u32                        tdn;
-	struct mlx5_core_mr        mr;
+	struct mlx5e_rq            drop_rq;
 
-	struct mlx5e_channel     **channel;
+	struct mlx5e_channels      channels;
 	u32                        tisn[MLX5E_MAX_NUM_TC];
-	u32                        indir_rqtn;
-
-
-	struct mlx5e_direct_tir    outer_direct_tir[MLX5E_MAX_NUM_CHANNELS];
-	u32                        outer_tirn[MLX5E_NUM_TT];
-	u32                        inner_tirn[MLX5E_NUM_TT];
-	u32                        sniffer_tirn[MLX5E_SNIFFER_NUM_TYPE];
+	struct mlx5e_rqt           indir_rqt;
+	struct mlx5e_tir           indir_tir[MLX5E_NUM_INDIR_TIRS];
+	struct mlx5e_tir           inner_indir_tir[MLX5E_NUM_INDIR_TIRS];
+	struct mlx5e_tir           direct_tir[MLX5E_MAX_NUM_CHANNELS];
 	u32                        tx_rates[MLX5E_MAX_NUM_SQS + MLX5E_MAX_RL_QUEUES];
+	int                        hard_mtu;
 
-	struct mlx5e_vxlan_db      vxlan;
 	struct mlx5e_flow_steering fs;
-	bool                       loopback_ok;
-	bool                       validate_loopback;
+	struct mlx5e_vxlan_db      vxlan;
 
-	struct mlx5e_params        params;
-	spinlock_t                 async_events_spinlock; /* sync hw events */
 	struct workqueue_struct    *wq;
 	struct work_struct         update_carrier_work;
 	struct work_struct         set_rx_mode_work;
 	struct work_struct         tx_timeout_work;
 	struct delayed_work        update_stats_work;
-	struct delayed_work        service_task;
-
-#ifdef HAVE_IEEE_DCBNL_ETS
-	struct mlx5e_dcbx          dcbx;
-#endif
 
 	struct mlx5_core_dev      *mdev;
 	struct net_device         *netdev;
 	struct mlx5e_stats         stats;
-	struct mlx5e_tstamp        tstamp;
-#ifdef HAVE_GET_SET_PRIV_FLAGS
-	u32                        pflags;
-#endif
-#ifndef HAVE_NDO_GET_STATS64
+#if !defined(HAVE_NDO_GET_STATS64) && !defined(HAVE_NDO_GET_STATS64_RET_VOID)
 	struct net_device_stats    netdev_stats;
 #endif
-	u16                        counter_set_id;
+	struct hwtstamp_config     tstamp;
+	u16 q_counter;
+#ifdef HAVE_IEEE_DCBNL_ETS
+#ifdef CONFIG_MLX5_CORE_EN_DCB
+	struct mlx5e_dcbx          dcbx;
+#endif
+#endif
+
+	const struct mlx5e_profile *profile;
+	void                      *ppriv;
+#ifdef CONFIG_MLX5_EN_IPSEC
+	struct mlx5e_ipsec        *ipsec;
+#endif
 
 	struct dentry *dfs_root;
-	u32 msg_level;
 
 	struct kobject *ecn_root_kobj;
 
 	struct mlx5e_ecn_ctx ecn_ctx[MLX5E_CONG_PROTOCOL_NUM];
 	struct mlx5e_ecn_enable_ctx ecn_enable_ctx[MLX5E_CONG_PROTOCOL_NUM][8];
-	int			   internal_error;
+	struct mlx5e_delay_drop delay_drop;
 };
 
-#define MLX5E_NET_IP_ALIGN 2
-
-struct mlx5e_tx_wqe {
-	struct mlx5_wqe_ctrl_seg ctrl;
-	struct mlx5_wqe_eth_seg  eth;
+struct mlx5e_profile {
+	void	(*init)(struct mlx5_core_dev *mdev,
+			struct net_device *netdev,
+			const struct mlx5e_profile *profile, void *ppriv);
+	void	(*cleanup)(struct mlx5e_priv *priv);
+	int	(*init_rx)(struct mlx5e_priv *priv);
+	void	(*cleanup_rx)(struct mlx5e_priv *priv);
+	int	(*init_tx)(struct mlx5e_priv *priv);
+	void	(*cleanup_tx)(struct mlx5e_priv *priv);
+	void	(*enable)(struct mlx5e_priv *priv);
+	void	(*disable)(struct mlx5e_priv *priv);
+	void	(*update_stats)(struct mlx5e_priv *priv);
+	void	(*update_carrier)(struct mlx5e_priv *priv);
+	int	(*max_nch)(struct mlx5_core_dev *mdev);
+	struct {
+		mlx5e_fp_handle_rx_cqe handle_rx_cqe;
+		mlx5e_fp_handle_rx_cqe handle_rx_cqe_mpwqe;
+	} rx_handlers;
+	void	(*netdev_registered_init)(struct mlx5e_priv *priv);
+	void    (*netdev_registered_remove)(struct mlx5e_priv *priv);
+	int	max_tc;
 };
 
-struct mlx5e_rx_wqe {
-	struct mlx5_wqe_srq_next_seg  next;
-	struct mlx5_wqe_data_seg      data;
-};
+#ifdef __ETHTOOL_DECLARE_LINK_MODE_MASK
+void mlx5e_build_ptys2ethtool_map(void);
+#endif
 
-static inline u16 mlx5_min_rx_wqes(int wq_type, u32 wq_size)
-{
-	if (wq_type == RQ_TYPE_STRIDE)
-		return min_t(u16, MLX5E_PARAMS_DEFAULT_MIN_STRIDING_RX_WQES,
-			     wq_size / 2);
-
-	return min_t(u16, MLX5E_PARAMS_DEFAULT_MIN_RX_WQES,
-		     wq_size / 2);
-}
-
-static inline int mlx5_min_log_rq_size(int wq_type)
-{
-	if (wq_type == RQ_TYPE_STRIDE)
-		return MLX5E_PARAMS_MINIMUM_LOG_STRIDING_RQ_SIZE;
-
-	return MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE;
-}
-
-static inline int mlx5_max_log_rq_size(int wq_type)
-{
-	if (wq_type == RQ_TYPE_STRIDE)
-		return MLX5E_PARAMS_MAXIMUM_LOG_STRIDING_RQ_SIZE;
-
-	return MLX5E_PARAMS_MAXIMUM_LOG_RQ_SIZE;
-}
-
-void mlx5e_send_nop(struct mlx5e_sq *sq, bool notify_hw);
 #if defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
 u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 #ifdef HAVE_SELECT_QUEUE_FALLBACK_T
@@ -797,51 +1093,90 @@ u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb,
 #else /* NDO_SELECT_QUEUE_HAS_ACCEL_PRIV || HAVE_SELECT_QUEUE_FALLBACK_T */
 u16 mlx5e_select_queue(struct net_device *dev, struct sk_buff *skb);
 #endif
-
 netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev);
 
 void mlx5e_completion_event(struct mlx5_core_cq *mcq);
 void mlx5e_cq_error_event(struct mlx5_core_cq *mcq, enum mlx5_event event);
 int mlx5e_napi_poll(struct napi_struct *napi, int budget);
-bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq);
-void mlx5e_free_tx_descs(struct mlx5e_sq *sq);
-struct sk_buff *mlx5e_poll_default_rx_cq(struct mlx5_cqe64 *cqe,
-					 struct mlx5e_rq *rq,
-					 u16 *ret_bytes_recv,
-					 struct mlx5e_rx_wqe **ret_wqe,
-					 __be16 *ret_wqe_id_be);
-struct sk_buff *mlx5e_poll_striding_rx_cq(struct mlx5_cqe64 *cqe,
-					  struct mlx5e_rq *rq,
-					  u16 *ret_bytes_recv,
-					  struct mlx5e_rx_wqe **ret_wqe,
-					  __be16 *ret_wqe_id_be);
-bool mlx5e_poll_rx_cq(struct mlx5e_cq *cq, int budget);
-bool is_poll_striding_wqe(struct mlx5e_rq *rq);
-void free_rq_res(struct mlx5e_rq *rq);
-void free_striding_rq_res(struct mlx5e_rq *rq);
-int mlx5e_alloc_rx_wqe(struct mlx5e_rq *rq, struct mlx5e_rx_wqe *wqe, u16 ix);
-inline int mlx5e_alloc_striding_rx_wqe(struct mlx5e_rq *rq,
-				       struct mlx5e_rx_wqe *wqe, u16 ix);
+void mlx5e_do_tx_timeout(struct mlx5e_priv *priv);
+bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget);
+int mlx5e_poll_rx_cq(struct mlx5e_cq *cq, int budget);
+bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq);
+void mlx5e_free_txqsq_descs(struct mlx5e_txqsq *sq);
+void mlx5e_free_xdpsq_descs(struct mlx5e_xdpsq *sq);
 
+void mlx5e_page_release(struct mlx5e_rq *rq, struct mlx5e_dma_info *dma_info,
+			bool recycle);
+void mlx5e_handle_rx_cqe(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe);
+void mlx5e_handle_rx_cqe_mpwrq(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe);
 bool mlx5e_post_rx_wqes(struct mlx5e_rq *rq);
-void mlx5e_prefetch_cqe(struct mlx5e_cq *cq);
-struct mlx5_cqe64 *mlx5e_get_cqe(struct mlx5e_cq *cq);
+bool mlx5e_post_rx_mpwqes(struct mlx5e_rq *rq);
+void mlx5e_dealloc_rx_wqe(struct mlx5e_rq *rq, u16 ix);
+void mlx5e_dealloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix);
+void mlx5e_free_rx_mpwqe(struct mlx5e_rq *rq, struct mlx5e_mpw_info *wi);
 
-void mlx5e_update_stats(struct mlx5e_priv *priv);
+u8 mlx5e_mpwqe_get_log_stride_size(struct mlx5e_priv *priv,
+				   struct mlx5e_params *params);
+u8 mlx5e_mpwqe_get_log_num_strides(struct mlx5e_priv *priv,
+				   struct mlx5e_params *params);
 
+void mlx5e_rx_am(struct mlx5e_rq *rq);
+void mlx5e_rx_am_work(struct work_struct *work);
+struct mlx5e_cq_moder mlx5e_am_get_def_profile(u8 rx_cq_period_mode);
+
+struct sk_buff *
+mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
+			  struct mlx5e_wqe_frag_info *wi, u32 cqe_bcnt);
+struct sk_buff *
+mlx5e_skb_from_cqe_nonlinear(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
+			     struct mlx5e_wqe_frag_info *wi, u32 cqe_bcnt);
+
+void mlx5e_update_sw_counters(struct mlx5e_priv *priv);
+void mlx5e_update_stats(struct mlx5e_priv *priv, bool full);
+
+int mlx5e_sysfs_create(struct net_device *dev);
+void mlx5e_sysfs_remove(struct net_device *dev);
+
+#if defined (CONFIG_MLX5_EN_SPECIAL_SQ) && (defined(HAVE_NDO_SET_TX_MAXRATE) || defined (HAVE_NDO_SET_TX_MAXRATE_EXTENDED))
+int mlx5e_rl_init_sysfs(struct net_device *netdev, struct mlx5e_params params);
+void mlx5e_rl_remove_sysfs(struct mlx5e_priv *priv);
+#endif
+
+#if defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE) || defined(HAVE_NDO_SETUP_TC_RH_EXTENDED)
+int mlx5e_setup_tc_mqprio(struct net_device *netdev,
+			  struct tc_mqprio_qopt *mqprio);
+#else
+int mlx5e_setup_tc(struct net_device *netdev, u8 tc);
+#endif
+
+int mlx5e_sniffer_start(struct mlx5e_priv *priv);
+int mlx5e_sniffer_stop(struct mlx5e_priv *priv);
 int mlx5e_create_flow_steering(struct mlx5e_priv *priv);
 void mlx5e_destroy_flow_steering(struct mlx5e_priv *priv);
-void mlx5e_init_eth_addr(struct mlx5e_priv *priv);
+void mlx5e_init_l2_addr(struct mlx5e_priv *priv);
 void mlx5e_destroy_flow_table(struct mlx5e_flow_table *ft);
-void mlx5e_set_rx_mode_core(struct mlx5e_priv *priv);
+int mlx5e_self_test_num(struct mlx5e_priv *priv);
+void mlx5e_self_test(struct net_device *ndev, struct ethtool_test *etest,
+		     u64 *buf);
+int mlx5e_ethtool_get_flow(struct mlx5e_priv *priv, struct ethtool_rxnfc *info,
+			   int location);
+int mlx5e_ethtool_get_all_flows(struct mlx5e_priv *priv,
+				struct ethtool_rxnfc *info, u32 *rule_locs);
+int mlx5e_ethtool_flow_replace(struct mlx5e_priv *priv,
+			       struct ethtool_rx_flow_spec *fs);
+int mlx5e_ethtool_flow_remove(struct mlx5e_priv *priv,
+			      int location);
+void mlx5e_ethtool_init_steering(struct mlx5e_priv *priv);
+void mlx5e_ethtool_cleanup_steering(struct mlx5e_priv *priv);
 void mlx5e_set_rx_mode_work(struct work_struct *work);
 
-void mlx5e_fill_hwstamp(struct mlx5e_tstamp *clock,
-			struct skb_shared_hwtstamps *hwts,
-			u64 timestamp);
-void mlx5e_ptp_overflow_check(struct mlx5e_priv *priv);
-void mlx5e_ptp_init(struct mlx5e_priv *priv);
-void mlx5e_ptp_cleanup(struct mlx5e_priv *priv);
+#ifdef HAVE_SIOCGHWTSTAMP
+int mlx5e_hwstamp_set(struct mlx5e_priv *priv, struct ifreq *ifr);
+int mlx5e_hwstamp_get(struct mlx5e_priv *priv, struct ifreq *ifr);
+#else
+int mlx5e_hwstamp_ioctl(struct net_device *dev, struct ifreq *ifr);
+#endif
+int mlx5e_modify_rx_cqe_compression_locked(struct mlx5e_priv *priv, bool val);
 
 #if defined(HAVE_NDO_RX_ADD_VID_HAS_3_PARAMS)
 int mlx5e_vlan_rx_add_vid(struct net_device *dev, __always_unused __be16 proto,
@@ -859,70 +1194,119 @@ int mlx5e_vlan_rx_kill_vid(struct net_device *dev, u16 vid);
 #else
 void mlx5e_vlan_rx_kill_vid(struct net_device *dev, u16 vid);
 #endif
-void mlx5e_enable_vlan_filter(struct mlx5e_priv *priv);
-void mlx5e_disable_vlan_filter(struct mlx5e_priv *priv);
-int mlx5e_add_all_vlan_rules(struct mlx5e_priv *priv);
-void mlx5e_del_all_vlan_rules(struct mlx5e_priv *priv);
-int mlx5e_add_tunneling_rule(struct mlx5e_priv *priv,
-			     enum mlx5e_tunnel_rule_type rule_type,
-			     u16 port_proto, u16 ethertype,
-			     struct mlx5_flow_rule **rule_p);
-void mlx5e_del_tunneling_rule(struct mlx5e_priv *priv,
-			      struct mlx5_flow_rule **rule_p);
+void mlx5e_enable_cvlan_filter(struct mlx5e_priv *priv);
+void mlx5e_disable_cvlan_filter(struct mlx5e_priv *priv);
+void mlx5e_timestamp_init(struct mlx5e_priv *priv);
+
+#if defined(LEGACY_ETHTOOL_OPS) && defined(HAVE_GET_SET_FLAGS)
+int mlx5e_modify_channels_vsd(struct mlx5e_channels *chs, bool vsd);
+#endif
+
+struct mlx5e_redirect_rqt_param {
+	bool is_rss;
+	union {
+		u32 rqn; /* Direct RQN (Non-RSS) */
+		struct {
+			u8 hfunc;
+			struct mlx5e_channels *channels;
+		} rss; /* RSS data */
+	};
+};
+
+int mlx5e_redirect_rqt(struct mlx5e_priv *priv, u32 rqtn, int sz,
+		       struct mlx5e_redirect_rqt_param rrp);
+void mlx5e_build_indir_tir_ctx_hash(struct mlx5e_params *params,
+				    enum mlx5e_traffic_types tt,
+				    void *tirc, bool inner);
+void mlx5e_sysfs_modify_tirs_hash(struct mlx5e_priv *priv, void *in, int inlen);
 
 int mlx5e_open_locked(struct net_device *netdev);
 int mlx5e_close_locked(struct net_device *netdev);
-int mlx5e_update_priv_params(struct mlx5e_priv *priv,
-			     struct mlx5e_params *new_params);
-u32 mlx5e_choose_lro_timeout(struct mlx5_core_dev *mdev,
-			     u32 wanted_timeout);
+
+int mlx5e_open_channels(struct mlx5e_priv *priv,
+			struct mlx5e_channels *chs);
+void mlx5e_close_channels(struct mlx5e_channels *chs);
+
+/* Function pointer to be used to modify WH settings while
+ * switching channels
+ */
+typedef int (*mlx5e_fp_hw_modify)(struct mlx5e_priv *priv);
+int mlx5e_switch_priv_channels(struct mlx5e_priv *priv,
+			       struct mlx5e_channels *new_chs,
+			       mlx5e_fp_hw_modify hw_modify);
+void mlx5e_activate_priv_channels(struct mlx5e_priv *priv);
+void mlx5e_deactivate_priv_channels(struct mlx5e_priv *priv);
+
+void mlx5e_build_default_indir_rqt(u32 *indirection_rqt, int len,
+				   int num_channels);
+void mlx5e_build_direct_tir_ctx(struct mlx5e_priv *priv, u32 rqtn, u32 *tirc);
+
+void mlx5e_set_tx_cq_mode_params(struct mlx5e_params *params,
+				 u8 cq_period_mode);
+void mlx5e_set_rx_cq_mode_params(struct mlx5e_params *params,
+				 u8 cq_period_mode);
+void mlx5e_init_rq_type_params(struct mlx5e_priv *priv,
+			       struct mlx5e_params *params,
+			       u8 rq_type);
+
+static inline bool mlx5e_tunnel_inner_ft_supported(struct mlx5_core_dev *mdev)
+{
+	return ((MLX5_CAP_ETH(mdev, tunnel_stateless_gre) ||
+#ifdef CONFIG_MLX5_INNER_RSS
+		 MLX5_CAP_ETH(mdev, tunnel_stateless_vxlan)) &&
+#else
+		 0) &&
+#endif
+		 MLX5_CAP_FLOWTABLE_NIC_RX(mdev, ft_field_support.inner_ip_version));
+}
+
+#ifdef CONFIG_MLX5_INNER_RSS
+struct mlx5_flow_handle *
+mlx5e_add_udp_tunnel_flow_rule(struct mlx5e_priv *priv,
+			       u16 etype, u16 port);
+#endif
 
 void mlx5e_create_debugfs(struct mlx5e_priv *priv);
 void mlx5e_destroy_debugfs(struct mlx5e_priv *priv);
-void mlx5e_self_test(struct net_device *dev,
-		     struct ethtool_test *etest,
-		     u64 *buf);
 
-int mlx5e_sysfs_create(struct net_device *dev);
-void mlx5e_sysfs_remove(struct net_device *dev);
-int mlx5e_rl_init_sysfs(struct net_device *netdev);
-void mlx5e_rl_remove_sysfs(struct net_device *netdev);
-int mlx5e_modify_rqs_vsd(struct mlx5e_priv *priv, int vsd);
-void mlx5e_build_default_indir_rqt(struct mlx5_core_dev *mdev,
-				   u32 *indirection_rqt, int len,
-				   int num_channels);
-int mlx5e_setup_tc(struct net_device *netdev, u8 tc);
-/*sniffer functions*/
-int mlx5e_sniffer_turn_on(struct net_device *dev);
-int mlx5e_sniffer_turn_off(struct net_device *dev);
-int mlx5e_sniffer_open_tir(struct mlx5e_priv *priv, int tt);
-void mlx5e_sniffer_initialize_private_data(void);
-
-static inline void mlx5e_tx_notify_hw(struct mlx5e_sq *sq,
-				      struct mlx5e_tx_wqe *wqe, int bf_sz)
+static inline
+struct mlx5e_tx_wqe *mlx5e_post_nop(struct mlx5_wq_cyc *wq, u32 sqn, u16 *pc)
 {
-	u16 ofst = MLX5_BF_OFFSET + sq->bf_offset;
+	u16                         pi   = *pc & wq->sz_m1;
+	struct mlx5e_tx_wqe        *wqe  = mlx5_wq_cyc_get_wqe(wq, pi);
+	struct mlx5_wqe_ctrl_seg   *cseg = &wqe->ctrl;
 
+	memset(cseg, 0, sizeof(*cseg));
+
+	cseg->opmod_idx_opcode = cpu_to_be32((*pc << 8) | MLX5_OPCODE_NOP);
+	cseg->qpn_ds           = cpu_to_be32((sqn << 8) | 0x01);
+
+	(*pc)++;
+
+	return wqe;
+}
+
+static inline
+void mlx5e_notify_hw(struct mlx5_wq_cyc *wq, u16 pc,
+		     void __iomem *uar_map,
+		     struct mlx5_wqe_ctrl_seg *ctrl)
+{
+	ctrl->fm_ce_se = MLX5_WQE_CTRL_CQ_UPDATE;
 	/* ensure wqe is visible to device before updating doorbell record */
+#ifdef dma_wmb
+	dma_wmb();
+#else
 	wmb();
+#endif
 
-	*sq->wq.db = cpu_to_be32(sq->pc);
+	*wq->db = cpu_to_be32(pc);
 
 	/* ensure doorbell record is visible to device before ringing the
-	 * doorbell */
+	 * doorbell
+	 */
 	wmb();
 
-	if (bf_sz) {
-		__iowrite64_copy(sq->uar_bf_map + ofst, &wqe->ctrl, bf_sz);
-
-		/* flush the write-combining mapped buffer */
-		wmb();
-
-	} else {
-		mlx5_write64((__be32 *)&wqe->ctrl, sq->uar_map + ofst, NULL);
-	}
-
-	sq->bf_offset ^= sq->bf_buf_size;
+	mlx5_write64((__be32 *)ctrl, uar_map, NULL);
 }
 
 static inline void mlx5e_cq_arm(struct mlx5e_cq *cq)
@@ -930,12 +1314,12 @@ static inline void mlx5e_cq_arm(struct mlx5e_cq *cq)
 	struct mlx5_core_cq *mcq;
 
 	mcq = &cq->mcq;
-	mlx5_cq_arm(mcq, MLX5_CQ_DB_REQ_NOT, mcq->uar->map, NULL, cq->wq.cc);
+	mlx5_cq_arm(mcq, MLX5_CQ_DB_REQ_NOT, mcq->uar->map, cq->wq.cc);
 }
 
-static inline int mlx5e_max_num_channels(int num_comp_vectors)
+static inline u32 mlx5e_get_wqe_mtt_offset(struct mlx5e_rq *rq, u16 wqe_ix)
 {
-	return min_t(int, num_comp_vectors, MLX5E_MAX_NUM_CHANNELS);
+	return wqe_ix * ALIGN(MLX5_MPWRQ_PAGES_PER_WQE, 8);
 }
 
 extern const struct ethtool_ops mlx5e_ethtool_ops;
@@ -944,16 +1328,17 @@ extern const struct ethtool_ops_ext mlx5e_ethtool_ops_ext;
 #endif
 
 #ifdef HAVE_IEEE_DCBNL_ETS
+#ifdef CONFIG_MLX5_CORE_EN_DCB
 #ifdef CONFIG_COMPAT_IS_DCBNL_OPS_CONST
 extern const struct dcbnl_rtnl_ops mlx5e_dcbnl_ops;
 #else
 extern struct dcbnl_rtnl_ops mlx5e_dcbnl_ops;
 #endif
-int mlx5e_dcbnl_set_dcbx_mode(struct mlx5e_priv *priv,
-			      enum mlx5_dcbx_oper_mode mode);
-void mlx5e_dcbnl_query_dcbx_mode(struct mlx5e_priv *priv,
-				 enum mlx5_dcbx_oper_mode *mode);
-void mlx5e_dcbnl_initialize(struct net_device *netdev);
+int mlx5e_dcbnl_ieee_setets_core(struct mlx5e_priv *priv, struct ieee_ets *ets);
+void mlx5e_dcbnl_initialize(struct mlx5e_priv *priv);
+void mlx5e_dcbnl_init_app(struct mlx5e_priv *priv);
+void mlx5e_dcbnl_delete_app(struct mlx5e_priv *priv);
+#endif
 #endif
 
 #ifndef CONFIG_RFS_ACCEL
@@ -962,22 +1347,134 @@ static inline int mlx5e_arfs_create_tables(struct mlx5e_priv *priv)
 	return 0;
 }
 
-static inline int mlx5e_arfs_init_tables(struct mlx5e_priv *priv)
+static inline void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv) {}
+
+static inline int mlx5e_arfs_enable(struct mlx5e_priv *priv)
 {
-	return 0;
+	return -EOPNOTSUPP;
 }
 
-static inline void mlx5e_arfs_shutdown_tables(struct mlx5e_priv *priv) {}
-static inline void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv) {}
+static inline int mlx5e_arfs_disable(struct mlx5e_priv *priv)
+{
+	return -EOPNOTSUPP;
+}
 #else
 int mlx5e_arfs_create_tables(struct mlx5e_priv *priv);
-int mlx5e_arfs_init_tables(struct mlx5e_priv *priv);
 void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv);
-void mlx5e_arfs_shutdown_tables(struct mlx5e_priv *priv);
 int mlx5e_arfs_enable(struct mlx5e_priv *priv);
 int mlx5e_arfs_disable(struct mlx5e_priv *priv);
 int mlx5e_rx_flow_steer(struct net_device *dev, const struct sk_buff *skb,
 			u16 rxq_index, u32 flow_id);
 #endif
+
+u16 mlx5e_get_max_inline_cap(struct mlx5_core_dev *mdev);
+int mlx5e_create_tir(struct mlx5_core_dev *mdev,
+		     struct mlx5e_tir *tir, u32 *in, int inlen);
+void mlx5e_destroy_tir(struct mlx5_core_dev *mdev,
+		       struct mlx5e_tir *tir);
+int mlx5e_create_mdev_resources(struct mlx5_core_dev *mdev);
+void mlx5e_destroy_mdev_resources(struct mlx5_core_dev *mdev);
+int mlx5e_refresh_tirs(struct mlx5e_priv *priv, bool enable_uc_lb);
+int mlx5e_modify_tirs_lro(struct mlx5e_priv *priv);
+#if (!defined(HAVE_NDO_SET_FEATURES) && !defined(HAVE_NET_DEVICE_OPS_EXT))
+int mlx5e_update_lro(struct net_device *netdev, bool enable);
+#endif
+
+/* common netdev helpers */
+int mlx5e_create_indirect_rqt(struct mlx5e_priv *priv);
+
+int mlx5e_create_indirect_tirs(struct mlx5e_priv *priv);
+void mlx5e_destroy_indirect_tirs(struct mlx5e_priv *priv);
+
+int mlx5e_create_direct_rqts(struct mlx5e_priv *priv);
+void mlx5e_destroy_direct_rqts(struct mlx5e_priv *priv);
+int mlx5e_create_direct_tirs(struct mlx5e_priv *priv);
+void mlx5e_destroy_direct_tirs(struct mlx5e_priv *priv);
+void mlx5e_destroy_rqt(struct mlx5e_priv *priv, struct mlx5e_rqt *rqt);
+
+int mlx5e_create_ttc_table(struct mlx5e_priv *priv);
+void mlx5e_destroy_ttc_table(struct mlx5e_priv *priv);
+
+int mlx5e_create_inner_ttc_table(struct mlx5e_priv *priv);
+void mlx5e_destroy_inner_ttc_table(struct mlx5e_priv *priv);
+
+int mlx5e_create_tis(struct mlx5_core_dev *mdev, int tc,
+		     u32 underlay_qpn, u32 *tisn);
+void mlx5e_destroy_tis(struct mlx5_core_dev *mdev, u32 tisn);
+
+int mlx5e_create_tises(struct mlx5e_priv *priv);
+void mlx5e_cleanup_nic_tx(struct mlx5e_priv *priv);
+int mlx5e_close(struct net_device *netdev);
+int mlx5e_open(struct net_device *netdev);
+void mlx5e_update_stats_work(struct work_struct *work);
+u32 mlx5e_choose_lro_timeout(struct mlx5_core_dev *mdev, u32 wanted_timeout);
+
+u32 mlx5e_ptys_to_speed(u32 eth_proto_oper);
+int mlx5e_get_port_speed(struct mlx5e_priv *priv, u32 *speed);
+int mlx5e_get_max_linkspeed(struct mlx5_core_dev *mdev, u32 *speed);
+u32 mlx5e_get_link_modes_mask(u32 speed);
+
+/* ethtool helpers */
+void mlx5e_ethtool_get_drvinfo(struct mlx5e_priv *priv,
+			       struct ethtool_drvinfo *drvinfo);
+void mlx5e_ethtool_get_strings(struct mlx5e_priv *priv,
+			       uint32_t stringset, uint8_t *data);
+int mlx5e_ethtool_get_sset_count(struct mlx5e_priv *priv, int sset);
+void mlx5e_ethtool_get_ethtool_stats(struct mlx5e_priv *priv,
+				     struct ethtool_stats *stats, u64 *data);
+void mlx5e_ethtool_get_ringparam(struct mlx5e_priv *priv,
+				 struct ethtool_ringparam *param);
+int mlx5e_ethtool_set_ringparam(struct mlx5e_priv *priv,
+				struct ethtool_ringparam *param);
+#if defined(HAVE_GET_SET_CHANNELS) || defined(HAVE_GET_SET_CHANNELS_EXT)
+void mlx5e_ethtool_get_channels(struct mlx5e_priv *priv,
+				struct ethtool_channels *ch);
+int mlx5e_ethtool_set_channels(struct mlx5e_priv *priv,
+			       struct ethtool_channels *ch);
+#endif
+int mlx5e_ethtool_get_coalesce(struct mlx5e_priv *priv,
+			       struct ethtool_coalesce *coal);
+int mlx5e_ethtool_set_coalesce(struct mlx5e_priv *priv,
+			       struct ethtool_coalesce *coal);
+#if defined(HAVE_GET_TS_INFO) || defined(HAVE_GET_TS_INFO_EXT)
+int mlx5e_ethtool_get_ts_info(struct mlx5e_priv *priv,
+			      struct ethtool_ts_info *info);
+#endif
+int mlx5e_ethtool_flash_device(struct mlx5e_priv *priv,
+			       struct ethtool_flash *flash);
+
+#ifdef HAVE_TC_SETUP_CB_EGDEV_REGISTER
+#ifdef HAVE_TC_BLOCK_OFFLOAD
+int mlx5e_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
+			    void *cb_priv);
+#else
+int mlx5e_setup_tc(struct net_device *dev, enum tc_setup_type type,
+		   void *type_data);
+#endif
+#endif
+
+/* mlx5e generic netdev management API */
+struct net_device*
+mlx5e_create_netdev(struct mlx5_core_dev *mdev, const struct mlx5e_profile *profile,
+		    void *ppriv);
+int mlx5e_attach_netdev(struct mlx5e_priv *priv);
+void mlx5e_detach_netdev(struct mlx5e_priv *priv);
+void mlx5e_destroy_netdev(struct mlx5e_priv *priv);
+void mlx5e_build_nic_params(struct mlx5e_priv *priv,
+			    struct mlx5e_params *params,
+			    u16 max_channels);
+u8 mlx5e_params_calculate_tx_min_inline(struct mlx5_core_dev *mdev);
+#ifdef HAVE_GET_SET_DUMP
+int mlx5e_get_dump_flag(struct net_device *netdev, struct ethtool_dump *dump);
+int mlx5e_get_dump_data(struct net_device *netdev, struct ethtool_dump *dump,
+			void *buffer);
+int mlx5e_set_dump(struct net_device *dev, struct ethtool_dump *dump);
+#endif
+
+static inline bool mlx5e_dropless_rq_supported(struct mlx5_core_dev *mdev)
+{
+	return (MLX5_CAP_GEN(mdev, rq_delay_drop) &&
+		MLX5_CAP_GEN(mdev, general_notification_event));
+}
 
 #endif /* __MLX5_EN_H__ */

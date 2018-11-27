@@ -41,14 +41,17 @@
 #endif
 
 enum {
-	IB_LRH_BYTES  = 8,
-	IB_ETH_BYTES  = 14,
-	IB_VLAN_BYTES = 4,
-	IB_GRH_BYTES  = 40,
-	IB_IP4_BYTES  = 20,
-	IB_UDP_BYTES  = 8,
-	IB_BTH_BYTES  = 12,
-	IB_DETH_BYTES = 8
+	IB_LRH_BYTES		= 8,
+	IB_ETH_BYTES		= 14,
+	IB_VLAN_BYTES		= 4,
+	IB_GRH_BYTES		= 40,
+	IB_IP4_BYTES		= 20,
+	IB_UDP_BYTES		= 8,
+	IB_BTH_BYTES		= 12,
+	IB_DETH_BYTES		= 8,
+	IB_EXT_ATOMICETH_BYTES	= 28,
+	IB_EXT_XRC_BYTES	= 4,
+	IB_ICRC_BYTES		= 4
 };
 
 struct ib_field {
@@ -82,6 +85,10 @@ enum {
 	IB_OPCODE_UC                                = 0x20,
 	IB_OPCODE_RD                                = 0x40,
 	IB_OPCODE_UD                                = 0x60,
+	/* per IBTA 1.3 vol 1 Table 38, A10.3.2 */
+	IB_OPCODE_CNP                               = 0x80,
+	/* Manufacturer specific */
+	IB_OPCODE_MSP                               = 0xe0,
 
 	/* operations -- just used to define real constants */
 	IB_OPCODE_SEND_FIRST                        = 0x00,
@@ -105,6 +112,9 @@ enum {
 	IB_OPCODE_ATOMIC_ACKNOWLEDGE                = 0x12,
 	IB_OPCODE_COMPARE_SWAP                      = 0x13,
 	IB_OPCODE_FETCH_ADD                         = 0x14,
+	/* opcode 0x15 is reserved */
+	IB_OPCODE_SEND_LAST_WITH_INVALIDATE         = 0x16,
+	IB_OPCODE_SEND_ONLY_WITH_INVALIDATE         = 0x17,
 
 	/* real constants follow -- see comment about above IB_OPCODE()
 	   macro for more details */
@@ -131,6 +141,8 @@ enum {
 	IB_OPCODE(RC, ATOMIC_ACKNOWLEDGE),
 	IB_OPCODE(RC, COMPARE_SWAP),
 	IB_OPCODE(RC, FETCH_ADD),
+	IB_OPCODE(RC, SEND_LAST_WITH_INVALIDATE),
+	IB_OPCODE(RC, SEND_ONLY_WITH_INVALIDATE),
 
 	/* UC */
 	IB_OPCODE(UC, SEND_FIRST),
@@ -228,14 +240,15 @@ struct ib_unpacked_eth {
 };
 
 struct ib_unpacked_ip4 {
-	u8	ver_len;
+	u8	ver;
+	u8	hdr_len;
 	u8	tos;
 	__be16	tot_len;
 	__be16	id;
 	__be16	frag_off;
 	u8	ttl;
 	u8	protocol;
-	__be16	check;
+	__sum16	check;
 	__be32	saddr;
 	__be32	daddr;
 };
@@ -281,7 +294,7 @@ void ib_unpack(const struct ib_field        *desc,
 	       void                         *buf,
 	       void                         *structure);
 
-u16 ib_ud_ip4_csum(struct ib_ud_header *header);
+__sum16 ib_ud_ip4_csum(struct ib_ud_header *header);
 
 int ib_ud_header_init(int		    payload_bytes,
 		      int		    lrh_present,

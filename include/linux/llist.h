@@ -1,4 +1,8 @@
+#ifndef COMPAT_LINUX_LLIST_H
+#define COMPAT_LINUX_LLIST_H
+
 #include <linux/version.h>
+
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0))
 #include_next <linux/llist.h>
 
@@ -222,3 +226,5 @@ extern struct llist_node *llist_del_first(struct llist_head *head);
 #endif /* (LINUX_VERSION_CODE > KERNEL_VERSION(3,1,0)) || (defined(CONFIG_SUSE_KERNEL) && defined(CONFIG_COMPAT_SLES_11_2)) */
 #endif /* LLIST_H */
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0) */
+
+#endif /* COMPAT_LINUX_LLIST_H */

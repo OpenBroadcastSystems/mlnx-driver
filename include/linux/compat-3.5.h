@@ -2,23 +2,13 @@
 #define LINUX_3_5_COMPAT_H
 
 #include <linux/version.h>
-#include <linux/fs.h>
-#include <linux/etherdevice.h>
-#include <linux/net.h>
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,5,0))
 
-/*
- * This backports:
- *
- *   From a3860c1c5dd1137db23d7786d284939c5761d517 Mon Sep 17 00:00:00 2001
- *   From: Xi Wang <xi.wang@gmail.com>
- *   Date: Thu, 31 May 2012 16:26:04 -0700
- *   Subject: [PATCH] introduce SIZE_MAX
- */
-
-#define SIZE_MAX    (~(size_t)0)
-
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/etherdevice.h>
+#include <linux/net.h>
 
 #include <linux/pkt_sched.h>
 

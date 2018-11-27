@@ -285,79 +285,46 @@ static DEVICE_ATTR(maxrate, S_IRUGO | S_IWUSR,
 
 #define MLX4_EN_NUM_SKPRIO		16
 
-static ssize_t mlx4_en_show_skprio2up(struct device *d,
-					 struct device_attribute *attr,
-					 char *buf)
+static ssize_t mlx4_en_show_tc_num(struct device *d,
+				   struct device_attribute *attr,
+				   char *buf)
 {
 	struct mlx4_en_priv *priv = to_en_priv(d);
-	struct net_device *dev = priv->dev;
-	int i;
+	struct net_device *netdev = priv->dev;
 	int len = 0;
 
-	for (i = 0; i < MLX4_EN_NUM_SKPRIO; i++)
-		len += sprintf(buf + len,  "%d ", 
-			       netdev_get_prio_tc_map(dev, i));
-	len += sprintf(buf + len, "\n");
+	len = sprintf(buf + len,  "%d\n", netdev_get_num_tc(netdev));
 
 	return len;
 }
 
-static ssize_t mlx4_en_store_skprio2up(struct device *d,
-					  struct device_attribute *attr,
-					  const char *buf, size_t count)
+static ssize_t mlx4_en_store_tc_num(struct device *d,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
 {
-	int ret = count;
 	struct mlx4_en_priv *priv = to_en_priv(d);
-	struct net_device *dev = priv->dev;
-	char save;
-	int i = 0;
-	u8 skprio2up[MLX4_EN_NUM_SKPRIO];
+	struct net_device *netdev = priv->dev;
+	int tc_num;
+	int err = 0;
 
-	do {
-		int len;
-		int new_value;
+	err = sscanf(buf, "%d", &tc_num);
 
-		if (i >= MLX4_EN_NUM_SKPRIO)
-			goto bad_elem_count;
+	if (err != 1)
+		return -EINVAL;
 
-		len = strcspn(buf, " ");
+	rtnl_lock();
+	err = mlx4_en_setup_tc(netdev, tc_num);
+	rtnl_unlock();
 
-		/* nul-terminate and parse */
-		save = buf[len];
-		((char *)buf)[len] = '\0';
+	if (err)
+		return err;
 
-		if (sscanf(buf, "%d", &new_value) != 1 ||
-				new_value > MLX4_EN_NUM_UP || new_value < 0) {
-			en_err(priv, "bad user priority: '%s'\n", buf);
-			ret = -EINVAL;
-			goto out;
-		}
-		skprio2up[i] = new_value;
+	return count;
 
-		buf += len+1;
-		i++;
-	} while (save == ' ');
-
-	if (i != MLX4_EN_NUM_SKPRIO)
-		goto bad_elem_count;
-
-#ifdef HAVE_NEW_TX_RING_SCHEME
-	mlx4_en_setup_tc(dev, MLX4_EN_NUM_UP);
-#endif
-
-	for (i = 0; i < MLX4_EN_NUM_SKPRIO; i++)
-		netdev_set_prio_tc_map(dev, i, skprio2up[i]);
-
-out:
-	return ret;
-
-bad_elem_count:
-	en_err(priv, "bad number of elemets in skprio2up array\n");
-	return -EINVAL;
 }
 
-static DEVICE_ATTR(skprio2up, S_IRUGO | S_IWUSR,
-		   mlx4_en_show_skprio2up, mlx4_en_store_skprio2up);
+static DEVICE_ATTR(tc_num, S_IRUGO | S_IWUSR,
+		   mlx4_en_show_tc_num, mlx4_en_store_tc_num);
 #endif
 
 #ifdef CONFIG_SYSFS_INDIR_SETTING
@@ -582,7 +549,7 @@ static struct attribute *mlx4_en_qos_attrs[] = {
 	&dev_attr_maxrate.attr,
 #endif
 #ifdef CONFIG_SYSFS_MQPRIO
-	&dev_attr_skprio2up.attr,
+	&dev_attr_tc_num.attr,
 #endif
 #ifdef CONFIG_SYSFS_INDIR_SETTING
 	&dev_attr_rxfh_indir.attr,
@@ -606,12 +573,67 @@ static struct attribute_group qos_group = {
 	.attrs = mlx4_en_qos_attrs,
 };
 
+static ssize_t phy_stat_show(const struct device *d,
+			    struct device_attribute *attr, char *buf,
+			    unsigned long offset)
+{
+	struct net_device *dev = to_net_dev(d);
+	struct mlx4_en_priv *priv = netdev_priv(dev);
+	struct mlx4_en_phy_stats *stats = &priv->phy_stats;
+
+	ssize_t ret = -EINVAL;
+
+	WARN_ON(offset > sizeof(struct mlx4_en_phy_stats) ||
+		offset % sizeof(u64) != 0);
+
+	spin_lock_bh(&priv->stats_lock);
+	ret = sprintf(buf, "%llu\n", *(u64 *)(((u8 *)stats) + offset));
+	spin_unlock_bh(&priv->stats_lock);
+
+	return ret;
+}
+
+#define PHY_STAT_ENTRY(name)						\
+static ssize_t name##_show(struct device *d,				\
+			   struct device_attribute *attr, char *buf)	\
+{									\
+	return phy_stat_show(d, attr, buf,				\
+			    offsetof(struct mlx4_en_phy_stats, name));	\
+}									\
+static DEVICE_ATTR(name, S_IRUGO, name##_show, NULL)
+
+PHY_STAT_ENTRY(rx_packets);
+PHY_STAT_ENTRY(tx_packets);
+PHY_STAT_ENTRY(rx_bytes);
+PHY_STAT_ENTRY(tx_bytes);
+
+static struct attribute *mlx4_en_phy_stat_attrs[] = {
+	&dev_attr_rx_packets.attr,
+	&dev_attr_tx_packets.attr,
+	&dev_attr_rx_bytes.attr,
+	&dev_attr_tx_bytes.attr,
+	NULL,
+};
+
+static struct attribute_group phy_stat_group = {
+	.name = "phy_stats",
+	.attrs = mlx4_en_phy_stat_attrs,
+};
+
 int mlx4_en_sysfs_create(struct net_device *dev)
 {
-	return sysfs_create_group(&(dev->dev.kobj), &qos_group);
+	int err = 0;
+
+	err = sysfs_create_group(&(dev->dev.kobj), &qos_group);
+
+	if (err)
+		return err;
+
+	return sysfs_create_group(&(dev->dev.kobj), &phy_stat_group);
 }
 
 void mlx4_en_sysfs_remove(struct net_device *dev)
 {
 	sysfs_remove_group(&(dev->dev.kobj), &qos_group);
+	sysfs_remove_group(&(dev->dev.kobj), &phy_stat_group);
 }

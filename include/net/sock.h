@@ -14,4 +14,8 @@
 #define sk_clone_lock sk_clone
 #endif
 
+#ifndef HAVE_SKWQ_HAS_SLEEPER
+#define skwq_has_sleeper wq_has_sleeper
+#endif
+
 #endif /* COMPAT_SOCK_H */

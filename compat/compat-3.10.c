@@ -21,17 +21,14 @@ int pci_vfs_assigned(struct pci_dev *pdev)
 	pci_read_config_word(pdev, pos + PCI_SRIOV_VF_STRIDE, &stride);
 
 	dev = pci_get_device(pdev->vendor, PCI_ANY_ID, NULL);
-	while (dev) {
 #ifdef HAVE_PCI_DEV_FLAGS_ASSIGNED
+	while (dev) {
 		if (dev->is_virtfn && pci_physfn(dev) == pdev &&
-			(dev->dev_flags & PCI_DEV_FLAGS_ASSIGNED)) {
-#else
-		if (dev->is_virtfn && pci_physfn(dev) == pdev) {
-#endif
+			(dev->dev_flags & PCI_DEV_FLAGS_ASSIGNED))
 			vfs++;
-		}
 		dev = pci_get_device(pdev->vendor, PCI_ANY_ID, dev);
 	}
+#endif
 	return vfs;
 }
 EXPORT_SYMBOL_GPL(pci_vfs_assigned);

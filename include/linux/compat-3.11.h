@@ -4,18 +4,12 @@
 #include <linux/version.h>
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0))
+#include <linux/netdevice.h>
 
 #ifndef AF_IB
 #define AF_IB		27      /* Native InfiniBand address    */
 #define PF_IB		AF_IB
 #endif /* AF_IB */
-
-#define netdev_notifier_info_to_dev LINUX_BACKPORT(netdev_notifier_info_to_dev)
-static inline struct net_device *
-netdev_notifier_info_to_dev(void *ptr)
-{
-	return (struct net_device *)ptr;
-}
 
 #if !defined(CONFIG_COMPAT_IFLA_VF_LINK_STATE_MAX)
 enum {
@@ -43,6 +37,12 @@ size_t sg_pcopy_from_buffer(struct scatterlist *sgl, unsigned int nents,
 #define sg_pcopy_to_buffer LINUX_BACKPORT(sg_pcopy_to_buffer)
 size_t sg_pcopy_to_buffer(struct scatterlist *sgl, unsigned int nents,
 			  void *buf, size_t buflen, off_t skip);
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
+#define fixed_size_llseek LINUX_BACKPORT(fixed_size_llseek)
+loff_t fixed_size_llseek(struct file *file, loff_t offset, int whence,
+			 loff_t size);
+#endif
 
 #endif
 

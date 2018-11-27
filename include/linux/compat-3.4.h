@@ -2,7 +2,6 @@
 #define LINUX_3_4_COMPAT_H
 
 #include <linux/version.h>
-
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3,4,0))
 
 #include <linux/etherdevice.h>
@@ -18,14 +17,6 @@
 
 #define simple_open LINUX_BACKPORT(simple_open)
 extern int simple_open(struct inode *inode, struct file *file);
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28))
-#define skb_add_rx_frag(skb, i, page, off, size, truesize) \
-	v2_6_28_skb_add_rx_frag(skb, i, page, off, size)
-#else
-#define skb_add_rx_frag(skb, i, page, off, size, truesize) \
-	skb_add_rx_frag(skb, i, page, off, size)
-#endif
 
 #ifdef CONFIG_X86_X32_ABI
 #define COMPAT_USE_64BIT_TIME \
@@ -104,4 +95,4 @@ static inline void eth_hw_addr_random(struct net_device *dev)
 
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(3,4,0)) */
 
-#endif /* LINUX_5_4_COMPAT_H */
+#endif /* LINUX_3_4_COMPAT_H */
