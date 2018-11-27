@@ -88,17 +88,21 @@ static void capi_invalidate(struct mlx5_core_capi *capi)
 	}
 }
 
-int mlx5_core_invalidate_range(struct mlx5_core_dev *dev)
+int mlx5_core_invalidate_range(struct mlx5_core_dev *dev,
+			       unsigned int *duration)
 {
 	struct mlx5_core_capi *capi = &dev->capi;
+	unsigned long start;
 
 	if (pci_channel_offline(dev->pdev) ||
 	    dev->state == MLX5_DEVICE_STATE_INTERNAL_ERROR)
 		return 0;
 
+	start = jiffies;
 	spin_lock(&capi->inv_lock);
 	capi_invalidate(capi);
 	spin_unlock(&capi->inv_lock);
+	*duration = jiffies_to_msecs(jiffies - start);
 	return 0;
 }
 EXPORT_SYMBOL(mlx5_core_invalidate_range);

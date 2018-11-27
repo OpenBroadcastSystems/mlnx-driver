@@ -33,12 +33,10 @@
 #ifndef __MLX5E_REP_H__
 #define __MLX5E_REP_H__
 
-#ifdef HAVE_IP_TUNNEL_INFO
+#if defined(HAVE_IP_TUNNEL_INFO) || defined(CONFIG_COMPAT_IP_TUNNELS)
 #include <net/ip_tunnels.h>
 #endif
-#ifdef HAVE_RHASHTABLE_PARAMS_AUTOMATIC_SHRINKING
 #include <linux/rhashtable.h>
-#endif
 #ifdef HAVE_REFCOUNT
 #include <linux/refcount.h>
 #else
@@ -48,7 +46,6 @@
 #include "en.h"
 
 #ifdef CONFIG_MLX5_ESWITCH
-#ifdef HAVE_RHASHTABLE_PARAMS_AUTOMATIC_SHRINKING
 struct mlx5e_neigh_update_table {
 	struct rhashtable       neigh_ht;
 	/* Save the neigh hash entries in a list in addition to the hash table
@@ -64,16 +61,12 @@ struct mlx5e_neigh_update_table {
 	unsigned long           min_interval; /* jiffies */
 #endif
 };
-#endif
 
 struct mlx5e_rep_priv {
 	struct mlx5_eswitch_rep *rep;
-#ifdef HAVE_RHASHTABLE_PARAMS_AUTOMATIC_SHRINKING
 	struct mlx5e_neigh_update_table neigh_update;
-#endif
 };
 
-#ifdef HAVE_RHASHTABLE_PARAMS_AUTOMATIC_SHRINKING
 struct mlx5e_neigh {
 	struct net_device *dev;
 	union {
@@ -124,7 +117,6 @@ struct mlx5e_neigh_hash_entry {
 	unsigned long reported_lastuse;
 #endif
 };
-#endif
 
 #ifdef HAVE_TCF_TUNNEL_INFO
 enum {
@@ -134,7 +126,7 @@ enum {
 #endif
 
 #ifdef HAVE_NET_TC_ACT_TC_TUNNEL_KEY_H
-#ifndef HAVE_IP_TUNNEL_INFO
+#if !defined(HAVE_IP_TUNNEL_INFO) && !defined(CONFIG_COMPAT_IP_TUNNELS)
 struct mlx5_encap_info {
 	__be32 daddr;
 	__be32 tun_id;
@@ -154,7 +146,7 @@ struct mlx5e_encap_entry {
 	struct hlist_node encap_hlist;
 	struct list_head flows;
 	u32 encap_id;
-#ifdef HAVE_IP_TUNNEL_INFO
+#if defined(HAVE_IP_TUNNEL_INFO) || defined(CONFIG_COMPAT_IP_TUNNELS)
 	struct ip_tunnel_info tun_info;
 #else
 	struct mlx5_encap_info tun_info;

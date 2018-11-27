@@ -1071,6 +1071,8 @@ int mlx5e_sysfs_create(struct net_device *dev)
 	if (err)
 		goto remove_debug_group;
 
+	mlx5_eswitch_compat_sysfs_init(dev);
+
 	return 0;
 
 remove_debug_group:
@@ -1094,6 +1096,8 @@ void mlx5e_sysfs_remove(struct net_device *dev)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	int i;
+
+	mlx5_eswitch_compat_sysfs_cleanup(dev);
 
 	sysfs_remove_group(&dev->dev.kobj, &qos_group);
 	sysfs_remove_group(&dev->dev.kobj, &debug_group);

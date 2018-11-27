@@ -65,7 +65,7 @@
 #include "mlx4_stats.h"
 
 #define DRV_NAME	"mlx4_en"
-#define DRV_VERSION	"4.3-3.0.2"
+#define DRV_VERSION	"4.4-2.0.7"
 
 #ifndef CONFIG_COMPAT_DISABLE_DCB
 #ifdef CONFIG_MLX4_EN_DCB

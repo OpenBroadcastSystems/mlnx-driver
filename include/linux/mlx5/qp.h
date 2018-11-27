@@ -513,6 +513,8 @@ struct mlx5_core_qp {
 	int			qpn;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
+	struct mlx5_pagefault *pfault_req;
+	struct mlx5_pagefault *pfault_res;
 };
 
 struct mlx5_qp_path {

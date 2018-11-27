@@ -440,6 +440,7 @@ nvmet_rdma_create_be_ctrl(struct nvmet_rdma_xrq *xrq,
 	struct ib_nvmf_backend_ctrl_init_attr init_attr;
 	struct ib_nvmf_ns_init_attr ns_init_attr;
 	int err;
+	unsigned be_nsid;
 
 #if defined(CONFIG_PPC) && defined(HAVE_PNV_PCI_SET_P2P)
 	err = pnv_pci_set_p2p(container_of(xrq->ndev->device->dev.parent,
@@ -489,7 +490,13 @@ nvmet_rdma_create_be_ctrl(struct nvmet_rdma_xrq *xrq,
 		goto out_put_resource;
 	}
 
-	nvmet_rdma_init_ns_attr(&ns_init_attr, ns->nsid, 1, 0,
+	be_nsid = nvme_find_ns_id_from_bdev(ns->bdev);
+	if (!be_nsid) {
+		err = -ENODEV;
+		goto out_destroy_be_ctrl;
+	}
+
+	nvmet_rdma_init_ns_attr(&ns_init_attr, ns->nsid, be_nsid, 0,
 				be_ctrl->ibctrl->id);
 	be_ctrl->ibns = ib_attach_nvmf_ns(be_ctrl->ibctrl, &ns_init_attr);
 	if (IS_ERR(be_ctrl->ibns)) {
@@ -514,7 +521,7 @@ out_err:
 #if defined(CONFIG_PPC) && defined(HAVE_PNV_PCI_SET_P2P)
 	pnv_pci_set_p2p(container_of(xrq->ndev->device->dev.parent,
 				     struct pci_dev, dev),
-			be_ctrl->pdev, OPAL_PCI_P2P_STORE);
+			ns->pdev, OPAL_PCI_P2P_STORE);
 #endif
 	return ERR_PTR(err);
 }

@@ -251,6 +251,7 @@ nvmet_rdma_put_rsp(struct nvmet_rdma_rsp *rsp)
 	spin_unlock_irqrestore(&rsp->queue->rsps_lock, flags);
 }
 
+#ifndef HAVE_SGL_FREE
 static void nvmet_rdma_free_sgl(struct scatterlist *sgl, unsigned int nents)
 {
 	struct scatterlist *sg;
@@ -264,8 +265,10 @@ static void nvmet_rdma_free_sgl(struct scatterlist *sgl, unsigned int nents)
 	kfree(sgl);
 }
 
+#endif
+#ifndef HAVE_SGL_ALLOC
 static int nvmet_rdma_alloc_sgl(struct scatterlist **sgl, unsigned int *nents,
-		u32 length)
+               u32 length)
 {
 	struct scatterlist *sg;
 	struct page *page;
@@ -282,11 +285,11 @@ static int nvmet_rdma_alloc_sgl(struct scatterlist **sgl, unsigned int *nents,
 	while (length) {
 		u32 page_len = min_t(u32, length, PAGE_SIZE);
 
-		page = alloc_page(GFP_KERNEL);
+	        page = alloc_page(GFP_KERNEL);
 		if (!page)
-			goto out_free_pages;
+	                goto out_free_pages;
 
-		sg_set_page(&sg[i], page, page_len, 0);
+	        sg_set_page(&sg[i], page, page_len, 0);
 		length -= page_len;
 		i++;
 	}
@@ -304,6 +307,7 @@ out:
 	return NVME_SC_INTERNAL;
 }
 
+#endif
 static int nvmet_rdma_alloc_cmd(struct nvmet_rdma_device *ndev,
 			struct nvmet_rdma_cmd *c, bool admin)
 {
@@ -550,7 +554,11 @@ static void nvmet_rdma_release_rsp(struct nvmet_rdma_rsp *rsp)
 	}
 
 	if (rsp->req.sg != &rsp->cmd->inline_sg)
+#ifdef HAVE_SGL_FREE
+		sgl_free(rsp->req.sg);
+#else
 		nvmet_rdma_free_sgl(rsp->req.sg, rsp->req.sg_cnt);
+#endif
 
 	if (unlikely(!list_empty_careful(&queue->rsp_wr_wait_list)))
 		nvmet_rdma_process_wr_wait_list(queue);
@@ -691,16 +699,24 @@ static u16 nvmet_rdma_map_sgl_keyed(struct nvmet_rdma_rsp *rsp,
 	u32 len = get_unaligned_le24(sgl->length);
 	u32 key = get_unaligned_le32(sgl->key);
 	int ret;
+#ifndef HAVE_SGL_ALLOC
 	u16 status;
+#endif
 
 	/* no data command? */
 	if (!len)
 		return 0;
 
+#ifdef HAVE_SGL_ALLOC
+	rsp->req.sg = sgl_alloc(len, GFP_KERNEL, &rsp->req.sg_cnt);
+	if (!rsp->req.sg)
+		return NVME_SC_INTERNAL;
+#else
 	status = nvmet_rdma_alloc_sgl(&rsp->req.sg, &rsp->req.sg_cnt,
 			len);
 	if (status)
 		return status;
+#endif
 
 	ret = rdma_rw_ctx_init(&rsp->rw, cm_id->qp, cm_id->port_num,
 			rsp->req.sg, rsp->req.sg_cnt, 0, addr, key,
@@ -1835,6 +1851,9 @@ module_init(nvmet_rdma_init);
 module_exit(nvmet_rdma_exit);
 
 MODULE_LICENSE("GPL v2");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
 MODULE_ALIAS("nvmet-transport-1"); /* 1 == NVMF_TRTYPE_RDMA */
 
 #include "rdma_offload.c"

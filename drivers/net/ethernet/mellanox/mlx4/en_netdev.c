@@ -4172,7 +4172,10 @@ static struct net_device_ops mlx4_netdev_base_ops = {
 	.extended.ndo_setup_tc_rh = __mlx4_en_setup_tc,
 #else
 #ifdef HAVE_NDO_SETUP_TC
-#if defined(HAVE_NDO_SETUP_TC_4_PARAMS) || defined(HAVE_NDO_SETUP_TC_TAKES_CHAIN_INDEX) || defined(HAVE_TC_FLOWER_OFFLOAD)
+#if defined(HAVE_NDO_SETUP_TC_4_PARAMS) || \
+    defined(HAVE_NDO_SETUP_TC_TAKES_CHAIN_INDEX) || \
+    defined(HAVE_TC_FLOWER_OFFLOAD) && \
+    !defined(CONFIG_COMPAT_CLS_FLOWER_MOD)
 	.ndo_setup_tc		= __mlx4_en_setup_tc,
 #else
 	.ndo_setup_tc           = mlx4_en_setup_tc,

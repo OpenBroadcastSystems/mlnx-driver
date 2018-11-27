@@ -64,14 +64,18 @@
 #include "accel/ipsec.h"
 #include "lib/clock.h"
 #include "icmd.h"
-#include "diag/tracer.h"
+#include "diag/fw_tracer.h"
 #ifdef HAVE_PNV_PCI_AS_NOTIFY
 #include <asm/pnv-pci.h>
 #endif
+#include "diag/diag_cnt.h"
 
 MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
 MODULE_DESCRIPTION("Mellanox Connect-IB, ConnectX-4, ConnectX-5 core driver");
 MODULE_LICENSE("Dual BSD/GPL");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
 MODULE_VERSION(DRIVER_VERSION);
 
 unsigned int mlx5_core_debug_mask;
@@ -89,6 +93,8 @@ MODULE_PARM_DESC(probe_vf, "probe VFs or not, 0 = not probe, 1 = probe. Default 
 
 struct proc_dir_entry *mlx5_core_proc_dir;
 struct proc_dir_entry *mlx5_crdump_dir;
+
+static u32 sw_owner_id[4];
 
 enum {
 	MLX5_ATOMIC_REQ_MODE_BE = 0x0,
@@ -1237,9 +1243,9 @@ static int mlx5_init_once(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 		goto out;
 	}
 
-	err = mlx5_init_cq_table(dev);
+	err = mlx5_cq_debugfs_init(dev);
 	if (err) {
-		dev_err(&pdev->dev, "failed to initialize cq table\n");
+		dev_err(&pdev->dev, "failed to initialize cq debugfs\n");
 		goto err_eq_cleanup;
 	}
 
@@ -1307,7 +1313,7 @@ err_tables_cleanup:
 	mlx5_cleanup_mkey_table(dev);
 	mlx5_cleanup_srq_table(dev);
 	mlx5_cleanup_qp_table(dev);
-	mlx5_cleanup_cq_table(dev);
+	mlx5_cq_debugfs_cleanup(dev);
 
 err_eq_cleanup:
 	mlx5_eq_cleanup(dev);
@@ -1330,7 +1336,7 @@ static void mlx5_cleanup_once(struct mlx5_core_dev *dev)
 	mlx5_cleanup_mkey_table(dev);
 	mlx5_cleanup_srq_table(dev);
 	mlx5_cleanup_qp_table(dev);
-	mlx5_cleanup_cq_table(dev);
+	mlx5_cq_debugfs_cleanup(dev);
 	mlx5_eq_cleanup(dev);
 }
 
@@ -1443,7 +1449,7 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	mlx5_as_notify_init(dev);
 #endif
 
-	err = mlx5_cmd_init_hca(dev);
+	err = mlx5_cmd_init_hca(dev, sw_owner_id);
 	if (err) {
 		dev_err(&pdev->dev, "init hca failed\n");
 		goto err_pagealloc_stop;
@@ -1527,11 +1533,13 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 		goto err_ipsec_start;
 	}
 
-	err = mlx5_tracer_init(dev);
+	err = mlx5_fw_tracer_init(dev);
 	if (err) {
 		dev_err(&pdev->dev, "Failed to init tracer %d\n", err);
 		goto err_tracer_init;
 	}
+
+	mlx5_diag_cnt_init(dev);
 
 	if (mlx5_device_registered(dev)) {
 		mlx5_attach_device(dev);
@@ -1550,7 +1558,8 @@ out:
 	return 0;
 
 err_reg_dev:
-	mlx5_tracer_cleanup(dev);
+	mlx5_fw_tracer_cleanup(dev);
+	mlx5_diag_cnt_cleanup(dev);
 err_tracer_init:
 	mlx5_accel_ipsec_cleanup(dev);
 err_ipsec_start:
@@ -1632,7 +1641,7 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	if (mlx5_device_registered(dev))
 		mlx5_detach_device(dev);
 
-	mlx5_tracer_cleanup(dev);
+	mlx5_diag_cnt_cleanup(dev);
 	mlx5_accel_ipsec_cleanup(dev);
 	mlx5_fpga_device_stop(dev);
 
@@ -1641,6 +1650,7 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv,
 	mlx5_irq_clear_affinity_hints(dev);
 	free_comp_eqs(dev);
 	mlx5_stop_eqs(dev);
+	mlx5_fw_tracer_cleanup(dev);
 	mlx5_put_uars_page(dev, priv->uar);
 	mlx5_free_irq_vectors(dev);
 	if (cleanup)
@@ -2515,6 +2525,8 @@ static void mlx5_remove_core_dir(void)
 static int __init init(void)
 {
 	int err;
+
+	get_random_bytes(&sw_owner_id, sizeof(sw_owner_id));
 
 	mlx5_core_verify_params();
 	mlx5_register_debugfs();

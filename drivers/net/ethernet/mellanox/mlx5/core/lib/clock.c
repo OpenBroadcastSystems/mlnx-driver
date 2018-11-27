@@ -547,6 +547,7 @@ void mlx5_init_clock(struct mlx5_core_dev *mdev)
 	u64 frac = 0;
 #endif
 	u32 dev_freq;
+	u64 overflow_cycles;
 
 	dev_freq = MLX5_CAP_GEN(mdev, device_frequency_khz);
 	if (!dev_freq) {
@@ -588,14 +589,20 @@ void mlx5_init_clock(struct mlx5_core_dev *mdev)
 
 	/* Calculate period in seconds to call the overflow watchdog - to make
 	 * sure counter is checked at least once every wrap around.
+	 * The period is calculated as the minimum between max HW cycles count
+	 * (The clock source mask) and max amount of cycles that can be
+	 * multiplied by clock multiplier where the result doesn't exceed
+	 * 64bits.
 	 */
+	overflow_cycles = min(~0ULL / 2 / clock->cycles.mult,
+			      clock->cycles.mask / 2);
 #ifdef HAVE_CYCLECOUNTER_CYC2NS_4_PARAMS
-	ns = cyclecounter_cyc2ns(&clock->cycles, clock->cycles.mask,
+	ns = cyclecounter_cyc2ns(&clock->cycles, overflow_cycles,
 				 frac, &frac);
 #else
-	ns = cyclecounter_cyc2ns(&clock->cycles, clock->cycles.mask);
+	ns = cyclecounter_cyc2ns(&clock->cycles, overflow_cycles);
 #endif
-	do_div(ns, NSEC_PER_SEC / 2 / HZ);
+	do_div(ns, NSEC_PER_SEC / HZ);
 	clock->overflow_period = ns;
 
 #if defined (HAVE_PTP_CLOCK_INFO_N_PINS) && defined (HAVE_PTP_CLOCK_INFO) && (defined (CONFIG_PTP_1588_CLOCK) || defined(CONFIG_PTP_1588_CLOCK_MODULE))

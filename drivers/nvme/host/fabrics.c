@@ -60,7 +60,7 @@ static struct nvmf_host *nvmf_host_add(const char *hostnqn)
 		goto out_unlock;
 
 	kref_init(&host->ref);
-	memcpy(host->nqn, hostnqn, NVMF_NQN_SIZE);
+	strlcpy(host->nqn, hostnqn, NVMF_NQN_SIZE);
 
 	list_add_tail(&host->list, &nvmf_hosts);
 out_unlock:
@@ -523,7 +523,7 @@ EXPORT_SYMBOL_GPL(nvmf_should_reconnect);
  */
 int nvmf_register_transport(struct nvmf_transport_ops *ops)
 {
-	if (!ops->create_ctrl || !ops->module)
+	if (!ops->create_ctrl)
 		return -EINVAL;
 
 	down_write(&nvmf_transports_rwsem);
@@ -565,6 +565,73 @@ static struct nvmf_transport_ops *nvmf_lookup_transport(
 
 	return NULL;
 }
+
+blk_status_t nvmf_check_if_ready(struct nvme_ctrl *ctrl, struct request *rq,
+		bool queue_live, bool is_connected)
+{
+	struct nvme_command *cmd = nvme_req(rq)->cmd;
+
+	if (likely(ctrl->state == NVME_CTRL_LIVE && is_connected))
+		return BLK_STS_OK;
+
+	switch (ctrl->state) {
+	case NVME_CTRL_NEW:
+	case NVME_CTRL_CONNECTING:
+	case NVME_CTRL_DELETING:
+		/*
+		 * This is the case of starting a new or deleting an association
+		 * but connectivity was lost before it was fully created or torn
+		 * down. We need to error the commands used to initialize the
+		 * controller so the reconnect can go into a retry attempt.  The
+		 * commands should all be marked REQ_FAILFAST_DRIVER, which will
+		 * hit the reject path below. Anything else will be queued while
+		 * the state settles.
+		 */
+		if (!is_connected)
+			break;
+
+		/*
+		 * If queue is live, allow only commands that are internally
+		 * generated pass through.  These are commands on the admin
+		 * queue to initialize the controller. This will reject any
+		 * ioctl admin cmds received while initializing.
+		 */
+		if (queue_live && !(nvme_req(rq)->flags & NVME_REQ_USERCMD))
+			return BLK_STS_OK;
+
+		/*
+		 * If the queue is not live, allow only a connect command.  This
+		 * will reject any ioctl admin cmd as well as initialization
+		 * commands if the controller reverted the queue to non-live.
+		 */
+		if (!queue_live && blk_rq_is_passthrough(rq) &&
+		     cmd->common.opcode == nvme_fabrics_command &&
+		     cmd->fabrics.fctype == nvme_fabrics_type_connect)
+			return BLK_STS_OK;
+		break;
+	default:
+		break;
+	}
+
+	/*
+	 * Any other new io is something we're not in a state to send to the
+	 * device.  Default action is to busy it and retry it after the
+	 * controller state is recovered. However, anything marked for failfast
+	 * or nvme multipath is immediately failed.  Note: commands used to
+	 * initialize the controller will be marked for failfast.
+	 * Note: nvme cli/ioctl commands are marked for failfast.
+	 */
+#ifdef CONFIG_NVME_MULTIPATH
+	if (!blk_noretry_request(rq) && !(rq->cmd_flags & REQ_NVME_MPATH))
+		return BLK_STS_RESOURCE;
+#else
+	if (!blk_noretry_request(rq))
+		return BLK_STS_RESOURCE;
+#endif
+	nvme_req(rq)->status = NVME_SC_ABORT_REQ;
+	return BLK_STS_IOERR;
+}
+EXPORT_SYMBOL_GPL(nvmf_check_if_ready);
 
 static const match_table_t opt_tokens = {
 	{ NVMF_OPT_TRANSPORT,		"transport=%s"		},
@@ -623,6 +690,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 				ret = -ENOMEM;
 				goto out;
 			}
+			kfree(opts->transport);
 			opts->transport = p;
 			break;
 		case NVMF_OPT_NQN:
@@ -631,6 +699,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 				ret = -ENOMEM;
 				goto out;
 			}
+			kfree(opts->subsysnqn);
 			opts->subsysnqn = p;
 			nqnlen = strlen(opts->subsysnqn);
 			if (nqnlen >= NVMF_NQN_SIZE) {
@@ -642,8 +711,6 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 			opts->discovery_nqn =
 				!(strcmp(opts->subsysnqn,
 					 NVME_DISC_SUBSYS_NAME));
-			if (opts->discovery_nqn)
-				opts->nr_io_queues = 0;
 			break;
 		case NVMF_OPT_TRADDR:
 			p = match_strdup(args);
@@ -651,6 +718,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 				ret = -ENOMEM;
 				goto out;
 			}
+			kfree(opts->traddr);
 			opts->traddr = p;
 			break;
 		case NVMF_OPT_TRSVCID:
@@ -659,6 +727,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 				ret = -ENOMEM;
 				goto out;
 			}
+			kfree(opts->trsvcid);
 			opts->trsvcid = p;
 			break;
 		case NVMF_OPT_QUEUE_SIZE:
@@ -745,6 +814,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 				ret = -EINVAL;
 				goto out;
 			}
+			nvmf_host_put(opts->host);
 			opts->host = nvmf_host_add(p);
 			kfree(p);
 			if (!opts->host) {
@@ -770,6 +840,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 				ret = -ENOMEM;
 				goto out;
 			}
+			kfree(opts->host_traddr);
 			opts->host_traddr = p;
 			break;
 		case NVMF_OPT_HOST_ID:
@@ -798,6 +869,11 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 		}
 	}
 
+	if (opts->discovery_nqn) {
+		opts->kato = 0;
+		opts->nr_io_queues = 0;
+		opts->duplicate_connect = true;
+	}
 	if (ctrl_loss_tmo < 0)
 		opts->max_reconnects = -1;
 	else
@@ -928,16 +1004,6 @@ nvmf_create_ctrl(struct device *dev, const char *buf, size_t count)
 	if (IS_ERR(ctrl)) {
 		ret = PTR_ERR(ctrl);
 		goto out_module_put;
-	}
-
-	if (strcmp(ctrl->subsys->subnqn, opts->subsysnqn)) {
-		dev_warn(ctrl->device,
-			"controller returned incorrect NQN: \"%s\".\n",
-			ctrl->subsys->subnqn);
-		module_put(ops->module);
-		up_read(&nvmf_transports_rwsem);
-		nvme_delete_ctrl_sync(ctrl);
-		return ERR_PTR(-EINVAL);
 	}
 
 	module_put(ops->module);
@@ -1100,6 +1166,9 @@ static void __exit nvmf_exit(void)
 }
 
 MODULE_LICENSE("GPL v2");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
 
 module_init(nvmf_init);
 module_exit(nvmf_exit);
