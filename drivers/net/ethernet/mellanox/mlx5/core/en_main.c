@@ -51,6 +51,16 @@
 #include "vxlan.h"
 #endif
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#define NETMAP_MLX5_MAIN
+#define DEV_NETMAP
+#include "mlx5_netmap_linux.h"
+#endif
+
 struct mlx5e_rq_param {
 	u32			rqc[MLX5_ST_SZ_DW(rqc)];
 	struct mlx5_wq_param	wq;
@@ -86,6 +96,9 @@ struct mlx5e_channel_param {
 
 static bool mlx5e_check_fragmented_striding_rq_cap(struct mlx5_core_dev *mdev)
 {
+#ifdef DEV_NETMAP
+	return 0;
+#endif
 	return MLX5_CAP_GEN(mdev, striding_rq) &&
 		MLX5_CAP_GEN(mdev, umr_ptr_rlky) &&
 		MLX5_CAP_ETH(mdev, reg_umr_sq);
@@ -631,6 +644,10 @@ static int mlx5e_rq_alloc_mpwqe_info(struct mlx5e_rq *rq,
 
 		mlx5e_build_umr_wqe(rq, &c->icosq, &wi->umr.wqe, i);
 	}
+
+#ifdef DEV_NETMAP
+	mlx5e_netmap_configure_rx_ring(rq, rq->ix);
+#endif /* DEV_NETMAP */
 
 	return 0;
 
@@ -1219,6 +1236,11 @@ static int mlx5e_wait_for_min_rx_wqes(struct mlx5e_rq *rq)
 	unsigned long exp_time = jiffies + msecs_to_jiffies(20000);
 	struct mlx5e_channel *c = rq->channel;
 
+#ifdef DEV_NETMAP
+	if (nm_netmap_on(NA(c->netdev)))
+		return 0; /* no need to wait when netmap has built wqes */
+#endif
+
 	u16 min_wqes = mlx5_min_rx_wqes(rq->wq_type, mlx5e_rqwq_get_size(rq));
 
 	while (time_before(jiffies, exp_time)) {
@@ -1226,6 +1248,10 @@ static int mlx5e_wait_for_min_rx_wqes(struct mlx5e_rq *rq)
 			return 0;
 
 		msleep(20);
+#ifdef DEV_NETMAP
+		if (nm_netmap_on(NA(c->netdev)))
+			mlx5e_netmap_rx_flush(rq); /* handle the CQEs */
+#endif
 	}
 
 	netdev_warn(c->netdev, "Failed to get min RX wqes on RQN[0x%x] wq cur_sz(%d) min_rx_wqes(%d)\n",
@@ -1368,6 +1394,9 @@ static void mlx5e_activate_rq(struct mlx5e_rq *rq)
 	u16 pi = sq->pc & sq->wq.sz_m1;
 	struct mlx5e_tx_wqe *nopwqe;
 
+#ifdef DEV_NETMAP
+	if (!nm_netmap_on(NA(rq->channel->netdev)))
+#endif
 	set_bit(MLX5E_RQ_STATE_ENABLED, &rq->state);
 	sq->db.ico_wqe[pi].opcode     = MLX5_OPCODE_NOP;
 	nopwqe = mlx5e_post_nop(&sq->wq, sq->sqn, &sq->pc);
@@ -1563,6 +1592,11 @@ static int mlx5e_alloc_txqsq(struct mlx5e_channel *c,
 		goto err_sq_wq_destroy;
 
 	sq->edge = (sq->wq.sz_m1 + 1) - MLX5_SEND_WQE_MAX_WQEBBS;
+
+#ifdef DEV_NETMAP
+	if (mlx5e_netmap_configure_tx_ring(c->priv, txq_ix))
+		return 0;
+#endif /* DEV_NETMAP */
 
 	return 0;
 
@@ -1771,6 +1805,9 @@ static void mlx5e_deactivate_txqsq(struct mlx5e_txqsq *sq)
 	netif_tx_disable_queue(sq->txq);
 
 	/* last doorbell out, godspeed .. */
+#ifdef DEV_NETMAP
+	if (!nm_netmap_on(NA(sq->txq->dev)))
+#endif
 	if (mlx5e_wqc_has_room_for(&sq->wq, sq->cc, sq->pc, 1)) {
 		struct mlx5e_tx_wqe *nop;
 
@@ -1786,11 +1823,18 @@ static void mlx5e_close_txqsq(struct mlx5e_txqsq *sq)
 	struct mlx5_core_dev *mdev = c->mdev;
 	struct mlx5_rate_limit rl = {0};
 
+
+#ifdef DEV_NETMAP
+	if (nm_netmap_on(NA(sq->txq->dev)))
+		mlx5e_netmap_tx_flush(sq); /* handle any CQEs */
+#endif
+
 	mlx5e_destroy_sq(mdev, sq->sqn);
 	if (sq->rate_limit) {
 		rl.rate = sq->rate_limit;
 		mlx5_rl_remove_rate(mdev, &rl);
 	}
+
 	mlx5e_free_txqsq_descs(sq);
 	mlx5e_free_txqsq(sq);
 }
@@ -1804,6 +1848,10 @@ static int mlx5e_wait_for_sq_flush(struct mlx5e_txqsq *sq)
 			return 0;
 
 		msleep(20);
+#ifdef DEV_NETMAP
+		if (nm_netmap_on(NA(sq->txq->dev)))
+			mlx5e_netmap_tx_flush(sq); /* handle any CQEs */
+#endif
 	}
 
 	netdev_err(sq->channel->netdev,
@@ -3532,6 +3580,10 @@ int mlx5e_open_locked(struct net_device *netdev)
 	if (priv->profile->update_carrier)
 		priv->profile->update_carrier(priv);
 
+#ifdef DEV_NETMAP
+	netmap_enable_all_rings(netdev); /* NOP if netmap not in use */
+#endif
+
 	if (priv->profile->update_stats)
 		queue_delayed_work(priv->wq, &priv->update_stats_work, 0);
 
@@ -3567,6 +3619,10 @@ int mlx5e_close_locked(struct net_device *netdev)
 		return 0;
 
 	clear_bit(MLX5E_STATE_OPENED, &priv->state);
+
+#ifdef DEV_NETMAP
+	netmap_disable_all_rings(netdev);
+#endif
 
 	if (MLX5E_GET_PFLAG(&priv->channels.params, MLX5E_PFLAG_SNIFFER)) {
 		mlx5e_sniffer_stop(priv);
@@ -6125,6 +6181,11 @@ void mlx5e_destroy_netdev(struct mlx5e_priv *priv)
 	const struct mlx5e_profile *profile = priv->profile;
 	struct net_device *netdev = priv->netdev;
 
+#ifdef DEV_NETMAP
+	netmap_detach(netdev);
+#endif /* DEV_NETMAP */
+
+
 	destroy_workqueue(priv->wq);
 	if (profile->cleanup)
 		profile->cleanup(priv);
@@ -6237,6 +6298,11 @@ static void *mlx5e_add(struct mlx5_core_dev *mdev)
 	mlx5e_dcbnl_init_app(priv);
 #endif
 #endif
+
+#ifdef DEV_NETMAP
+	mlx5e_netmap_attach(priv);
+#endif /* DEV_NETMAP */
+
 	return priv;
 
 err_unregister_netdev:

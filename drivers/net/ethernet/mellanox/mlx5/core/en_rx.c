@@ -150,7 +150,7 @@ static inline u32 mlx5e_decompress_cqes_cont(struct mlx5e_rq *rq,
 	return cqe_count;
 }
 
-static inline u32 mlx5e_decompress_cqes_start(struct mlx5e_rq *rq,
+u32 mlx5e_decompress_cqes_start(struct mlx5e_rq *rq,
 					      struct mlx5e_cq *cq,
 					      int budget_rem)
 {

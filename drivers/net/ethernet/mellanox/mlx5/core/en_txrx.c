@@ -35,6 +35,15 @@
 #endif
 #include "en.h"
 
+
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#include "mlx5_netmap_linux.h"
+#endif
+
 #if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
 static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)
 {
@@ -62,6 +71,45 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 
 #ifndef HAVE_NAPI_COMPLETE_DONE_RET_VALUE
 	clear_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags);
+#endif
+
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+	if (nm_netmap_on(NA(c->netdev))) {
+		/*
+		 * In netmap mode, all the work is done in the context
+		 * of the client thread. Interrupt handlers only wake up
+		 * clients, which may be sleeping on individual rings
+		 * or on a global resource for all rings.
+		 */
+		struct mlx5e_rq *rq = &c->rq;
+		int dummy;
+
+		/* Wake netmap rx client. This results in a call to
+		 * mlx5e_netmap_rxsync() which will check for any
+		 * received packets and process them
+		 */
+		netmap_rx_irq(rq->netdev, rq->ix, &dummy);
+
+		for (i = 0; i < c->num_tc; i++) {
+
+			struct mlx5e_cq *scq = &c->sq[i].cq;
+
+			/* Wake netmap tx client. This results in a call to
+			 * mlx5e_netmap_txsync()  which will check if a batch
+			 * of packets has finished sending and recycle the
+			 * buffers
+			 */
+			netmap_tx_irq(scq->channel->netdev, scq->channel->ix);
+		}
+
+		/* cq interrupts are not re-armed until the end of the
+		 * mlx5e_netmap_*sync() functions so we don't get more
+		 * interrupts if a call to those is already pending or in progress.
+		 */
+		napi_complete(napi);
+
+		return 0;
+	}
 #endif
 
 	for (i = 0; i < c->num_tc; i++)

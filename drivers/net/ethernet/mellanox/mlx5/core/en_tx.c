@@ -38,6 +38,15 @@
 #include "en_accel/ipsec_rxtx.h"
 #include "lib/clock.h"
 
+
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#include "mlx5_netmap_linux.h"
+#endif
+
 #define MLX5E_SQ_NOPS_ROOM  MLX5_SEND_WQE_MAX_WQEBBS
 #define MLX5E_SQ_STOP_ROOM (MLX5_SEND_WQE_MAX_WQEBBS +\
 			    MLX5E_SQ_NOPS_ROOM)
@@ -688,15 +697,17 @@ void mlx5e_free_txqsq_descs(struct mlx5e_txqsq *sq)
 			continue;
 		}
 
-		for (i = 0; i < wi->num_dma; i++) {
-			struct mlx5e_sq_dma *dma =
-				mlx5e_dma_get(sq, sq->dma_fifo_cc++);
+		if (!nm_netmap_on(NA(sq->txq->dev))) {
+			/* do not free skbs in netmap mode */
+			for (i = 0; i < wi->num_dma; i++) {
+				struct mlx5e_sq_dma *dma =
+					mlx5e_dma_get(sq, sq->dma_fifo_cc++);
 
-			mlx5e_tx_dma_unmap(sq->pdev, dma);
+				mlx5e_tx_dma_unmap(sq->pdev, dma);
+			}
+			dev_kfree_skb_any(skb);
 		}
-
-		dev_kfree_skb_any(skb);
-		sq->cc += wi->num_wqebbs;
+        sq->cc += wi->num_wqebbs;
 	}
 }
 
