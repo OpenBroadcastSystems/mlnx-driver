@@ -34,6 +34,14 @@
 #include <linux/irq.h>
 #include <linux/prefetch.h>
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#include "mlx5_netmap_linux.h"
+#endif
+
 void mlx5e_prefetch_cqe(struct mlx5e_cq *cq)
 {
 	struct mlx5_cqwq *wq = &cq->wq;
@@ -91,6 +99,50 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	int i;
 
 	clear_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags);
+
+#ifdef DEV_NETMAP
+	if (nm_netmap_on(NA(c->netdev))) {
+		/*
+		 * In netmap mode, all the work is done in the context
+		 * of the client thread. Interrupt handlers only wake up
+		 * clients, which may be sleeping on individual rings
+		 * or on a global resource for all rings.
+		 */
+		struct mlx5e_rq *rq = &c->rq;
+		int dummy;
+
+		/* Wake netmap rx client. This results in a call to
+		 * mlx5e_netmap_rxsync() which will check for any
+		 * received packets and process them
+		 */
+		netmap_rx_irq(rq->netdev, rq->ix, &dummy);
+
+		for (i = 0; i < c->num_tc; i++) {
+
+			struct mlx5e_cq *scq = &c->sq[i].cq;
+
+			/* Wake netmap tx client. This results in a call to
+			 * mlx5e_netmap_txsync()  which will check if a batch
+			 * of packets has finished sending and recycle the
+			 * buffers
+			 */
+			netmap_tx_irq(scq->channel->netdev, scq->channel->ix);
+		}
+
+		/* cq interrupts are not re-armed until the end of the
+		 * mlx5e_netmap_*sync() functions so we don't get more
+		 * interrupts if a call to those is already pending or in progress.
+		 */
+		napi_complete(napi);
+
+		/* avoid losing completion event during/after polling cqs */
+		if (test_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags)) {
+			napi_schedule(napi); /* request another call to this func */
+		}
+
+		return 0;
+	}
+#endif
 
 	busy |= mlx5e_poll_rx_cq(&c->rq.cq, budget);
 

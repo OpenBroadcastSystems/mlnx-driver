@@ -32,6 +32,12 @@
 
 #include "en.h"
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+#define NETMAP_GET_RQ_TYPE(mdev)  RQ_TYPE_NONE  /* ensure RQ_TYPE_STRIDE not used with netmap */
+#else
+#define NETMAP_GET_RQ_TYPE(mdev)  MLX5_CAP_GEN(mdev, striding_rq)
+#endif
+
 static const char mlx5e_test_names[][ETH_GSTRING_LEN] = {
 	"Speed Test",
 	"Link Test",
@@ -468,8 +474,7 @@ static void mlx5e_get_ringparam(struct net_device *dev,
 				struct ethtool_ringparam *param)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
-	int rq_wq_type = MLX5_CAP_GEN(priv->mdev, striding_rq);
-
+	int rq_wq_type = NETMAP_GET_RQ_TYPE(priv->mdev);  /* Add netmap support */
 	param->rx_max_pending =
 		mlx5e_rx_wqes_to_packets(rq_wq_type,
 					   1 << mlx5_max_log_rq_size(rq_wq_type));
@@ -485,7 +490,7 @@ static int mlx5e_set_ringparam(struct net_device *dev,
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
 	struct mlx5e_params new_params;
-	int rq_wq_type = MLX5_CAP_GEN(priv->mdev, striding_rq);
+	int rq_wq_type = NETMAP_GET_RQ_TYPE(priv->mdev);  /* Add netmap support */
 	u16 min_rx_wqes;
 	u8 log_rq_size;
 	u8 log_sq_size;

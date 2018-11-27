@@ -61,6 +61,19 @@ struct mlx5e_channel_param {
 	struct mlx5e_cq_param      tx_cq;
 };
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#define NETMAP_MLX5_MAIN
+#include "mlx5_netmap_linux.h"
+
+#define NETMAP_GET_RQ_TYPE(mdev)  RQ_TYPE_NONE  /* ensure RQ_TYPE_STRIDE not used with netmap */
+#else
+#define NETMAP_GET_RQ_TYPE(mdev)  MLX5_CAP_GEN(mdev, striding_rq)
+#endif
+
 static void mlx5e_update_carrier(struct mlx5e_priv *priv)
 {
 	struct mlx5_core_dev *mdev = priv->mdev;
@@ -351,8 +364,7 @@ static int mlx5e_create_rq(struct mlx5e_channel *c,
 
 	param->wq.db_numa_node = cpu_to_node(c->cpu);
 
-	rq->rq_type =  MLX5_CAP_GEN(mdev, striding_rq);
-
+	rq->rq_type =  NETMAP_GET_RQ_TYPE(mdev);  /* Add netmap support */
 	err = mlx5_wq_ll_create(mdev, &param->wq, rqc_wq, &rq->wq,
 				&rq->wq_ctrl);
 	if (err)
@@ -414,6 +426,10 @@ static int mlx5e_create_rq(struct mlx5e_channel *c,
 	rq->netdev  = c->netdev;
 	rq->channel = c;
 	rq->ix      = c->ix;
+
+#ifdef DEV_NETMAP
+	mlx5e_netmap_configure_rx_ring(rq, rq->ix);
+#endif /* DEV_NETMAP */
 
 	return 0;
 
@@ -551,6 +567,11 @@ static int mlx5e_wait_for_min_rx_wqes(struct mlx5e_rq *rq)
 	struct mlx5_wq_ll *wq = &rq->wq;
 	int i;
 
+#ifdef DEV_NETMAP
+	if (nm_netmap_on(NA(c->netdev)))
+		return 0; /* no need to wait when netmap has built wqes */
+#endif
+
 	for (i = 0; i < MLX5_EN_MAX_ITER; i++) {
 		if (wq->cur_sz >= priv->params.min_rx_wqes)
 			return 0;
@@ -636,7 +657,12 @@ static int mlx5e_open_rq(struct mlx5e_channel *c,
 	if (err)
 		goto err_disable_rq;
 
-	set_bit(MLX5E_RQ_STATE_POST_WQES_ENABLE, &rq->state);
+#ifdef DEV_NETMAP
+	if (!nm_netmap_on(NA(c->netdev)))
+#endif
+	{
+		set_bit(MLX5E_RQ_STATE_POST_WQES_ENABLE, &rq->state);
+	}
 	mlx5e_send_nop(&c->sq[0], true); /* trigger mlx5e_post_rx_wqes() */
 
 	return 0;
@@ -660,8 +686,14 @@ static void mlx5e_close_rq(struct mlx5e_rq *rq)
 
 	mlx5e_modify_rq_state(rq, MLX5_RQC_STATE_RDY, MLX5_RQC_STATE_ERR);
 	if (!priv->internal_error) {
-		for (i = 0; i < MLX5_EN_MAX_ITER && !mlx5_wq_ll_is_empty(&rq->wq); i++)
+		for (i = 0; i < MLX5_EN_MAX_ITER && !mlx5_wq_ll_is_empty(&rq->wq); i++) {
 			msleep(MLX5_EN_MSLEEP_QUANT);
+
+#ifdef DEV_NETMAP
+			if (nm_netmap_on(NA(c->netdev)))
+				mlx5e_netmap_rx_flush(rq); /* handle the CQEs */
+#endif
+		}
 
 		if (i == MLX5_EN_MAX_ITER)
 			pr_warn("%s: aborted\n", __func__);
@@ -750,6 +782,11 @@ static int mlx5e_create_sq(struct mlx5e_channel *c,
 	sq->tx_ind    = index;
 	sq->bf_budget = MLX5E_SQ_BF_BUDGET;
 	sq->edge      = (sq->wq.sz_m1 + 1) - MLX5_SEND_WQE_MAX_WQEBBS;
+
+#ifdef DEV_NETMAP
+	if (mlx5e_netmap_configure_tx_ring(priv, txq_ix))
+		return 0;
+#endif /* DEV_NETMAP */
 
 	return 0;
 
@@ -913,9 +950,14 @@ static void mlx5e_close_sq(struct mlx5e_priv *priv, struct mlx5e_sq *sq)
 	napi_synchronize(&sq->channel->napi); /* prevent netif_tx_wake_queue */
 	netif_tx_disable_queue(sq->txq);
 
-	/* ensure hw is notified of all pending wqes */
-	if (mlx5e_sq_has_room_for(sq, 1))
-		mlx5e_send_nop(sq, true);
+#ifdef DEV_NETMAP
+	if (!nm_netmap_on(NA(priv->netdev)))
+#endif
+	{
+		/* ensure hw is notified of all pending wqes */
+		if (mlx5e_sq_has_room_for(sq, 1))
+			mlx5e_send_nop(sq, true);
+	}
 
 	err = mlx5e_modify_sq(sq, MLX5_SQC_STATE_RDY, MLX5_SQC_STATE_ERR, false, 0);
 	if (!priv->internal_error && !err) {
@@ -924,6 +966,11 @@ static void mlx5e_close_sq(struct mlx5e_priv *priv, struct mlx5e_sq *sq)
 			    test_bit(MLX5E_SQ_TX_TIMEOUT, &sq->state))
 				break;
 			msleep(MLX5_EN_MSLEEP_QUANT);
+
+#ifdef DEV_NETMAP
+			if (nm_netmap_on(NA(priv->netdev)))
+				mlx5e_netmap_tx_flush(sq); /* handle any CQEs */
+#endif
 		}
 
 		if (i == MLX5_EN_MAX_ITER)
@@ -1400,7 +1447,7 @@ static void mlx5e_build_rq_param(struct mlx5e_priv *priv,
 	MLX5_SET(wq, wq, pd,               priv->pdn);
 	MLX5_SET(rqc,  rqc, counter_set_id, priv->counter_set_id);
 
-	if (MLX5_CAP_GEN(priv->mdev, striding_rq) == RQ_TYPE_STRIDE) {
+	if (NETMAP_GET_RQ_TYPE(priv->mdev) == RQ_TYPE_STRIDE) {
 		MLX5_SET(wq, wq, wq_type, MLX5_WQ_TYPE_STRQ);
 		MLX5_SET(wq, wq, log_wqe_num_of_strides,
 			 MLX5E_PARAMS_DEFAULT_LOG_WQE_NUM_STRIDES);
@@ -1451,7 +1498,7 @@ static void mlx5e_build_rx_cq_param(struct mlx5e_priv *priv,
 		MLX5_SET(cqc, cqc, cqe_comp_en, 1);
 	}
 
-	if (MLX5_CAP_GEN(priv->mdev, striding_rq) == RQ_TYPE_STRIDE) {
+	if (NETMAP_GET_RQ_TYPE(priv->mdev) == RQ_TYPE_STRIDE) {
 		MLX5_SET(cqc, cqc, log_cq_size, priv->params.log_rq_size +
 			 ilog2(MLX5E_PARAMS_HW_NUM_STRIDES_BASIC_VAL) +  MLX5E_PARAMS_DEFAULT_LOG_WQE_NUM_STRIDES);
 		/* Currently disable compressed with striding */
@@ -2185,6 +2232,10 @@ int mlx5e_open_locked(struct net_device *netdev)
 #endif
 	mlx5e_set_rx_mode_core(priv);
 
+#ifdef DEV_NETMAP
+	netmap_enable_all_rings(netdev); /* NOP if netmap not in use */
+#endif
+
 	queue_delayed_work(priv->wq, &priv->update_stats_work, 0);
 	queue_delayed_work(priv->wq, &priv->service_task, 0);
 
@@ -2245,6 +2296,10 @@ int mlx5e_close_locked(struct net_device *netdev)
 		return 0;
 	}
 	clear_bit(MLX5E_STATE_OPENED, &priv->state);
+
+#ifdef DEV_NETMAP
+	netmap_disable_all_rings(netdev);
+#endif
 
 	mlx5e_set_rx_mode_core(priv);
 #if defined(HAVE_VXLAN_ENABLED) && defined(HAVE_VXLAN_DYNAMIC_PORT)
@@ -3077,16 +3132,16 @@ static void mlx5e_build_netdev_priv(struct mlx5_core_dev *mdev,
 	netdev_rss_key_fill(priv->params.toeplitz_hash_key,
 			    sizeof(priv->params.toeplitz_hash_key));
 
-	if (MLX5_CAP_GEN(mdev, striding_rq)) {
+	if (NETMAP_GET_RQ_TYPE(mdev)) {  /* Add netmap support */
 		/* TODO ethtoo for these params */
 		priv->params.log_rq_size = MLX5E_PARAMS_DEFAULT_LOG_STRIDING_RQ_SIZE;
 	}
 	priv->params.min_rx_wqes =
-		mlx5_min_rx_wqes(MLX5_CAP_GEN(mdev, striding_rq),
+		mlx5_min_rx_wqes(NETMAP_GET_RQ_TYPE(mdev),
 				 BIT(priv->params.log_rq_size));
 	/* TODO: add user ability to configure lro wqe size */
 	/* Enable LRO by default in case of strided RQ is supported */
-	if (MLX5_CAP_GEN(mdev, striding_rq) && MLX5_CAP_ETH(mdev, lro_cap)) {
+	if (NETMAP_GET_RQ_TYPE(mdev) && MLX5_CAP_ETH(mdev, lro_cap)) {
 		priv->params.lro_en = true;
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
 		priv->pflags |= MLX5E_PRIV_FLAG_HWLRO;
@@ -3353,6 +3408,10 @@ static void *mlx5e_create_netdev(struct mlx5_core_dev *mdev)
 	if (err)
 		goto err_unregister_netdev;
 
+#ifdef DEV_NETMAP
+	mlx5e_netmap_attach(priv);
+#endif /* DEV_NETMAP */
+
 	return priv;
 
 err_unregister_netdev:
@@ -3386,6 +3445,10 @@ static void mlx5e_destroy_netdev(struct mlx5_core_dev *mdev, void *vpriv)
 {
 	struct mlx5e_priv *priv = vpriv;
 	struct net_device *netdev = priv->netdev;
+
+#ifdef DEV_NETMAP
+	netmap_detach(netdev);
+#endif /* DEV_NETMAP */
 
 	mlx5e_sysfs_remove(netdev);
 

@@ -65,7 +65,7 @@ static inline void mlx5e_decompress_cqe(struct mlx5e_cq *cq,
 }
 
 #define MLX5E_MINI_ARRAY_SZ 8
-static void mlx5e_decompress_cqes(struct mlx5e_cq *cq)
+void mlx5e_decompress_cqes(struct mlx5e_cq *cq)
 {
 	struct mlx5_mini_cqe8 mini_array[8];
 	struct mlx5_cqe64 title;
