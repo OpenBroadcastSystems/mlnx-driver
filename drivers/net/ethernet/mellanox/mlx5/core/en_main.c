@@ -645,10 +645,6 @@ static int mlx5e_rq_alloc_mpwqe_info(struct mlx5e_rq *rq,
 		mlx5e_build_umr_wqe(rq, &c->icosq, &wi->umr.wqe, i);
 	}
 
-#ifdef DEV_NETMAP
-	mlx5e_netmap_configure_rx_ring(rq, rq->ix);
-#endif /* DEV_NETMAP */
-
 	return 0;
 
 err_unmap_mtts:
@@ -1029,6 +1025,10 @@ static int mlx5e_alloc_rq(struct mlx5e_channel *c,
 	INIT_WORK(&rq->am.work, mlx5e_rx_am_work);
 	rq->am.mode = params->rx_cq_moderation.cq_period_mode;
 
+#ifdef DEV_NETMAP
+	mlx5e_netmap_configure_rx_ring(rq, rq->ix);
+#endif /* DEV_NETMAP */
+
 	return 0;
 
 err_free:
@@ -1277,6 +1277,9 @@ static void mlx5e_free_rx_descs(struct mlx5e_rq *rq)
 			wqe_ix_be = *wq->tail_next;
 			wqe_ix    = be16_to_cpu(wqe_ix_be);
 			wqe       = mlx5_wq_ll_get_wqe(wq, wqe_ix);
+#ifdef DEV_NETMAP
+			if (!nm_netmap_on(NA(rq->channel->netdev)))
+#endif
 			rq->dealloc_wqe(rq, wqe_ix);
 			mlx5_wq_ll_pop(wq, wqe_ix_be,
 				       &wqe->next.next_wqe_index);
