@@ -46,6 +46,14 @@
 #include "en_accel/ipsec_rxtx.h"
 #include "lib/clock.h"
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#include "mlx5_netmap_linux.h"
+#endif
+
 static inline bool mlx5e_rx_hw_stamp(struct hwtstamp_config *config)
 {
 	return config->rx_filter == HWTSTAMP_FILTER_ALL;
@@ -1500,6 +1508,13 @@ int mlx5e_poll_rx_cq(struct mlx5e_cq *cq, int budget)
 		priv = mlx5i_epriv(rq->netdev);
 	else
 		priv = netdev_priv(rq->netdev);
+#endif
+
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+	int dummy;
+	int nm_irq = netmap_rx_irq(rq->netdev, rq->ix, &dummy);
+	if (nm_irq != NM_IRQ_PASS)
+		return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
 #endif
 
 	if (unlikely(!MLX5E_TEST_BIT(rq->state, MLX5E_RQ_STATE_ENABLED)))

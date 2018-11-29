@@ -1237,7 +1237,8 @@ static int mlx5e_wait_for_min_rx_wqes(struct mlx5e_rq *rq)
 	struct mlx5e_channel *c = rq->channel;
 
 #ifdef DEV_NETMAP
-	if (nm_netmap_on(NA(c->netdev)))
+	struct netmap_adapter *na = NA(c->netdev);
+	if (nm_netmap_on(na) && na->rx_rings[rq->ix]->nr_mode == NKR_NETMAP_ON)
 		return 0; /* no need to wait when netmap has built wqes */
 #endif
 
@@ -1248,10 +1249,6 @@ static int mlx5e_wait_for_min_rx_wqes(struct mlx5e_rq *rq)
 			return 0;
 
 		msleep(20);
-#ifdef DEV_NETMAP
-		if (nm_netmap_on(NA(c->netdev)))
-			mlx5e_netmap_rx_flush(rq); /* handle the CQEs */
-#endif
 	}
 
 	netdev_warn(c->netdev, "Failed to get min RX wqes on RQN[0x%x] wq cur_sz(%d) min_rx_wqes(%d)\n",
@@ -1277,9 +1274,6 @@ static void mlx5e_free_rx_descs(struct mlx5e_rq *rq)
 			wqe_ix_be = *wq->tail_next;
 			wqe_ix    = be16_to_cpu(wqe_ix_be);
 			wqe       = mlx5_wq_ll_get_wqe(wq, wqe_ix);
-#ifdef DEV_NETMAP
-			if (!nm_netmap_on(NA(rq->channel->netdev)))
-#endif
 			rq->dealloc_wqe(rq, wqe_ix);
 			mlx5_wq_ll_pop(wq, wqe_ix_be,
 				       &wqe->next.next_wqe_index);
@@ -1292,6 +1286,10 @@ static void mlx5e_free_rx_descs(struct mlx5e_rq *rq)
 
 			wqe_ix    = mlx5_wq_cyc_ctr2ix(wq, wq->wqe_ctr - wq->cur_sz);
 			wqe       = mlx5_wq_cyc_get_wqe(wq, wqe_ix);
+#ifdef DEV_NETMAP
+			struct netmap_adapter *na = NA(rq->channel->netdev);
+			if (!nm_netmap_on(na) || na->rx_rings[rq->ix]->nr_mode == NKR_NETMAP_OFF)
+#endif
 			rq->dealloc_wqe(rq, wqe_ix);
 			mlx5_wq_cyc_pop(wq);
 		}
@@ -1397,9 +1395,6 @@ static void mlx5e_activate_rq(struct mlx5e_rq *rq)
 	u16 pi = sq->pc & sq->wq.sz_m1;
 	struct mlx5e_tx_wqe *nopwqe;
 
-#ifdef DEV_NETMAP
-	if (!nm_netmap_on(NA(rq->channel->netdev)))
-#endif
 	set_bit(MLX5E_RQ_STATE_ENABLED, &rq->state);
 	sq->db.ico_wqe[pi].opcode     = MLX5_OPCODE_NOP;
 	nopwqe = mlx5e_post_nop(&sq->wq, sq->sqn, &sq->pc);
@@ -1809,7 +1804,7 @@ static void mlx5e_deactivate_txqsq(struct mlx5e_txqsq *sq)
 
 	/* last doorbell out, godspeed .. */
 #ifdef DEV_NETMAP
-	if (!nm_netmap_on(NA(sq->txq->dev)))
+	if (!nm_netmap_on(NA(sq->txq->dev))) // TODO
 #endif
 	if (mlx5e_wqc_has_room_for(&sq->wq, sq->cc, sq->pc, 1)) {
 		struct mlx5e_tx_wqe *nop;
@@ -1828,7 +1823,7 @@ static void mlx5e_close_txqsq(struct mlx5e_txqsq *sq)
 
 
 #ifdef DEV_NETMAP
-	if (nm_netmap_on(NA(sq->txq->dev)))
+	if (nm_netmap_on(NA(sq->txq->dev))) // TODO
 		mlx5e_netmap_tx_flush(sq); /* handle any CQEs */
 #endif
 
@@ -1837,7 +1832,6 @@ static void mlx5e_close_txqsq(struct mlx5e_txqsq *sq)
 		rl.rate = sq->rate_limit;
 		mlx5_rl_remove_rate(mdev, &rl);
 	}
-
 	mlx5e_free_txqsq_descs(sq);
 	mlx5e_free_txqsq(sq);
 }
@@ -1852,7 +1846,7 @@ static int mlx5e_wait_for_sq_flush(struct mlx5e_txqsq *sq)
 
 		msleep(20);
 #ifdef DEV_NETMAP
-		if (nm_netmap_on(NA(sq->txq->dev)))
+		if (nm_netmap_on(NA(sq->txq->dev))) // TODO
 			mlx5e_netmap_tx_flush(sq); /* handle any CQEs */
 #endif
 	}

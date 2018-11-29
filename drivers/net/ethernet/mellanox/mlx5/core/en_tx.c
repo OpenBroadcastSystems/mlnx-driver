@@ -571,6 +571,11 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget)
 
 	sq = container_of(cq, struct mlx5e_txqsq, cq);
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+	if (netmap_tx_irq(sq->channel->netdev, sq->channel->ix) != NM_IRQ_PASS)
+		return false;
+#endif
+
 	if (unlikely(!MLX5E_TEST_BIT(sq->state, MLX5E_SQ_STATE_ENABLED)))
 		return false;
 
