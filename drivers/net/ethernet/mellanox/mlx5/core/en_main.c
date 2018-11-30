@@ -1395,6 +1395,9 @@ static void mlx5e_activate_rq(struct mlx5e_rq *rq)
 	u16 pi = sq->pc & sq->wq.sz_m1;
 	struct mlx5e_tx_wqe *nopwqe;
 
+#ifdef DEV_NETMAP
+	if (!nm_netmap_on(NA(rq->channel->netdev)) || NA(rq->channel->netdev)->rx_rings[rq->ix]->nr_mode == NKR_NETMAP_OFF)
+#endif
 	set_bit(MLX5E_RQ_STATE_ENABLED, &rq->state);
 	sq->db.ico_wqe[pi].opcode     = MLX5_OPCODE_NOP;
 	nopwqe = mlx5e_post_nop(&sq->wq, sq->sqn, &sq->pc);
