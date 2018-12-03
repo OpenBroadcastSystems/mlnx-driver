@@ -72,8 +72,8 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 4.4}
-%{!?_release: %global _release 2.0.7.0.gee7aa0e}
+%{!?_version: %global _version 4.5}
+%{!?_release: %global _release 1.0.1.0.gb4fdfac}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 Name: %{_name}
@@ -94,7 +94,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.4-2.0.7.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -102,7 +102,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.4-2.0.7.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -110,7 +110,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.4-2.0.7.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -118,19 +118,20 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.4-2.0.7.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.4-2.0.7.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
 %global kernel_release() $(make -C %{1} kernelrelease | grep -v make | tail -1)
 BuildRequires: %kernel_module_package_buildreqs
+BuildRequires: /usr/bin/perl
 %(echo "Requires: mlnx-en-utils" > ${RPM_BUILD_ROOT}/preamble)
 %kernel_module_package -f %{SOURCE1} %flav -p ${RPM_BUILD_ROOT}/preamble -r %{_kmp_rel}
 %else # not KMP
@@ -144,7 +145,6 @@ Requires: coreutils
 Requires: kernel
 Requires: pciutils
 Requires: grep
-Requires: perl
 Requires: procps
 Requires: module-init-tools
 Requires: mlnx-en-utils
@@ -152,7 +152,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.4-2.0.7.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
 %endif #end if "%{KMP}" == "1"
 
 #

@@ -337,7 +337,7 @@ static void mlx4_en_lro_init(struct mlx4_en_rx_ring *ring,
 
 int mlx4_en_create_rx_ring(struct mlx4_en_priv *priv,
 			   struct mlx4_en_rx_ring **pring,
-			   u32 size, u16 stride, int node)
+			   u32 size, u16 stride, int node, int queue_index)
 {
 	struct mlx4_en_dev *mdev = priv->mdev;
 	struct mlx4_en_rx_ring *ring;
@@ -362,15 +362,17 @@ int mlx4_en_create_rx_ring(struct mlx4_en_priv *priv,
 	ring->log_stride = ffs(ring->stride) - 1;
 	ring->buf_size = ring->size * ring->stride + TXBB_SIZE;
 
+#ifdef HAVE_NET_XDP_H
+	if (xdp_rxq_info_reg(&ring->xdp_rxq, priv->dev, queue_index) < 0)
+		goto err_ring;
+#endif
+
 	tmp = size * roundup_pow_of_two(MLX4_EN_MAX_RX_FRAGS *
 					sizeof(struct mlx4_en_rx_alloc));
-	ring->rx_info = vzalloc_node(tmp, node);
+	ring->rx_info = kvzalloc_node(tmp, GFP_KERNEL, node);
 	if (!ring->rx_info) {
-		ring->rx_info = vzalloc(tmp);
-		if (!ring->rx_info) {
-			err = -ENOMEM;
-			goto err_ring;
-		}
+		err = -ENOMEM;
+		goto err_xdp_info;
 	}
 
 	en_dbg(DRV, priv, "Allocated rx_info ring at addr:%p size:%d\n",
@@ -391,9 +393,13 @@ int mlx4_en_create_rx_ring(struct mlx4_en_priv *priv,
 	return 0;
 
 err_info:
-	vfree(ring->rx_info);
+	kvfree(ring->rx_info);
 	ring->rx_info = NULL;
+err_xdp_info:
+#ifdef HAVE_NET_XDP_H
+	xdp_rxq_info_unreg(&ring->xdp_rxq);
 err_ring:
+#endif
 	kfree(ring);
 	*pring = NULL;
 
@@ -521,9 +527,12 @@ void mlx4_en_destroy_rx_ring(struct mlx4_en_priv *priv,
 					lockdep_is_held(&mdev->state_lock));
 	if (old_prog)
 		bpf_prog_put(old_prog);
+#ifdef HAVE_NET_XDP_H
+	xdp_rxq_info_unreg(&ring->xdp_rxq);
+#endif
 #endif
 	mlx4_free_hwq_res(mdev->dev, &ring->wqres, size * stride + TXBB_SIZE);
-	vfree(ring->rx_info);
+	kvfree(ring->rx_info);
 	ring->rx_info = NULL;
 	kfree(ring);
 	*pring = NULL;
@@ -730,56 +739,28 @@ static int get_fixed_ipv4_csum(__wsum hw_checksum, struct sk_buff *skb,
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
-/* In IPv6 packets, besides subtracting the pseudo header checksum,
- * we also compute/add the IP header checksum which
- * is not added by the HW.
+/* In IPv6 packets, hw_checksum lacks 6 bytes from IPv6 header:
+ * 4 first bytes : priority, version, flow_lbl
+ * and 2 additional bytes : nexthdr, hop_limit.
  */
 static int get_fixed_ipv6_csum(__wsum hw_checksum, struct sk_buff *skb,
 			       struct ipv6hdr *ipv6h)
 {
 	__u8 nexthdr = ipv6h->nexthdr;
-	__wsum csum_pseudo_hdr = 0;
+	__wsum temp;
 
 	if (unlikely(nexthdr == IPPROTO_FRAGMENT ||
 		     nexthdr == IPPROTO_HOPOPTS ||
 		     nexthdr == IPPROTO_SCTP))
 		return -1;
-	hw_checksum = csum_add(hw_checksum, (__force __wsum)htons(nexthdr));
 
-	csum_pseudo_hdr = csum_partial(&ipv6h->saddr,
-				       sizeof(ipv6h->saddr) + sizeof(ipv6h->daddr), 0);
-	csum_pseudo_hdr = csum_add(csum_pseudo_hdr, (__force __wsum)ipv6h->payload_len);
-	csum_pseudo_hdr = csum_add(csum_pseudo_hdr,
-				   (__force __wsum)htons(nexthdr));
-
-	skb->csum = csum_sub(hw_checksum, csum_pseudo_hdr);
-	skb->csum = csum_add(skb->csum, csum_partial(ipv6h, sizeof(struct ipv6hdr), 0));
+	/* priority, version, flow_lbl */
+	temp = csum_add(hw_checksum, *(__wsum *)ipv6h);
+	/* nexthdr and hop_limit */
+	skb->csum = csum_add(temp, (__force __wsum)*(__be16 *)&ipv6h->nexthdr);
 	return 0;
 }
 #endif
-static int check_csum(struct mlx4_cqe *cqe, struct sk_buff *skb, void *va,
-		      netdev_features_t dev_features)
-{
-	__wsum hw_checksum = 0;
-
-	void *hdr = (u8 *)va + sizeof(struct ethhdr);
-
-	hw_checksum = csum_unfold((__force __sum16)cqe->checksum);
-
-	if (cqe->vlan_my_qpn & cpu_to_be32(MLX4_CQE_CVLAN_PRESENT_MASK) &&
-	    !(dev_features & NETIF_F_HW_VLAN_CTAG_RX)) {
-		hw_checksum = get_fixed_vlan_csum(hw_checksum, hdr);
-		hdr += sizeof(struct vlan_hdr);
-	}
-
-	if (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPV4))
-		return get_fixed_ipv4_csum(hw_checksum, skb, hdr);
-#if IS_ENABLED(CONFIG_IPV6)
-	if (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPV6))
-		return get_fixed_ipv6_csum(hw_checksum, skb, hdr);
-#endif
-	return 0;
-}
 
 static void mlx4_en_inline_scatter(struct mlx4_en_rx_ring *ring,
 				   struct mlx4_en_rx_alloc *frags,
@@ -809,6 +790,37 @@ static void mlx4_en_inline_scatter(struct mlx4_en_rx_ring *ring,
 	ring->inline_scatter++;
 }
 
+/* We reach this function only after checking that any of
+ * the (IPv4 | IPv6) bits are set in cqe->status.
+ */
+static int check_csum(struct mlx4_cqe *cqe, struct sk_buff *skb, void *va,
+		      netdev_features_t dev_features)
+{
+	__wsum hw_checksum = 0;
+
+	void *hdr = (u8 *)va + sizeof(struct ethhdr);
+
+	hw_checksum = csum_unfold((__force __sum16)cqe->checksum);
+
+	if (cqe->vlan_my_qpn & cpu_to_be32(MLX4_CQE_CVLAN_PRESENT_MASK) &&
+	    !(dev_features & NETIF_F_HW_VLAN_CTAG_RX)) {
+		hw_checksum = get_fixed_vlan_csum(hw_checksum, hdr);
+		hdr += sizeof(struct vlan_hdr);
+	}
+
+#if IS_ENABLED(CONFIG_IPV6)
+	if (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPV6))
+		return get_fixed_ipv6_csum(hw_checksum, skb, hdr);
+#endif
+	return get_fixed_ipv4_csum(hw_checksum, skb, hdr);
+}
+
+#if IS_ENABLED(CONFIG_IPV6)
+#define MLX4_CQE_STATUS_IP_ANY (MLX4_CQE_STATUS_IPV4 | MLX4_CQE_STATUS_IPV6)
+#else
+#define MLX4_CQE_STATUS_IP_ANY (MLX4_CQE_STATUS_IPV4)
+#endif
+
 int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int budget)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
@@ -822,14 +834,14 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 	bool doorbell_pending;
 #endif
 	struct mlx4_cqe *cqe;
+#ifdef HAVE_XDP_BUFF
+	struct xdp_buff xdp;
+#endif
 	int polled = 0;
 	int index;
 
-	if (unlikely(!priv->port_up))
+	if (unlikely(!priv->port_up || budget <= 0))
 		return 0;
-
-	if (unlikely(budget <= 0))
-		return polled;
 
 	ring = priv->rx_ring[cq_ring];
 
@@ -837,6 +849,9 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 	/* Protect accesses to: ring->xdp_prog, priv->mac_hash list */
 	rcu_read_lock();
 	xdp_prog = rcu_dereference(ring->xdp_prog);
+#ifdef HAVE_NET_XDP_H
+	xdp.rxq = &ring->xdp_rxq;
+#endif
 	doorbell_pending = 0;
 #endif
 
@@ -933,7 +948,6 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		 */
 #ifdef HAVE_XDP_BUFF
 		if (xdp_prog) {
-			struct xdp_buff xdp;
 			struct page *npage;
 			dma_addr_t ndma, dma;
 #ifdef HAVE_XDP_BUFF_DATA_HARD_START
@@ -958,11 +972,12 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 			xdp.data = va;
 			xdp.data_end = xdp.data + length;
 #endif
+
 			act = bpf_prog_run_xdp(xdp_prog, &xdp);
 
 #ifdef HAVE_XDP_BUFF_DATA_HARD_START
+			length = xdp.data_end - xdp.data;
 			if (xdp.data != orig_data) {
-				length = xdp.data_end - xdp.data;
 				frags[0].page_offset = xdp.data -
 					xdp.data_hard_start;
 				va = xdp.data;
@@ -1037,28 +1052,29 @@ xdp_drop_no_cnt:
 		skb_record_rx_queue(skb, cq_ring);
 
 		if (likely(dev->features & NETIF_F_RXCSUM)) {
-			if (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_TCP |
-						      MLX4_CQE_STATUS_UDP)) {
-				if ((cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPOK)) &&
-				    cqe->checksum == cpu_to_be16(0xffff)) {
+			if ((cqe->status & cpu_to_be16(MLX4_CQE_STATUS_TCP |
+						       MLX4_CQE_STATUS_UDP)) &&
+			    (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPOK)) &&
+			    cqe->checksum == cpu_to_be16(0xffff)) {
 #ifdef HAVE_NETDEV_HW_ENC_FEATURES
-					bool l2_tunnel = (dev->hw_enc_features & NETIF_F_RXCSUM) &&
-						(cqe->vlan_my_qpn & cpu_to_be32(MLX4_CQE_L2_TUNNEL));
-#endif
+				bool l2_tunnel;
 
-					ip_summed = CHECKSUM_UNNECESSARY;
+				l2_tunnel = (dev->hw_enc_features & NETIF_F_RXCSUM) &&
+					(cqe->vlan_my_qpn & cpu_to_be32(MLX4_CQE_L2_TUNNEL));
+#endif
+				ip_summed = CHECKSUM_UNNECESSARY;
 #ifdef HAVE_SKB_SET_HASH
-					hash_type = PKT_HASH_TYPE_L4;
+				hash_type = PKT_HASH_TYPE_L4;
 #endif
 #ifdef HAVE_NETDEV_HW_ENC_FEATURES
-					if (l2_tunnel)
+				if (l2_tunnel)
 #ifdef HAVE_SK_BUFF_CSUM_LEVEL
-						skb->csum_level = 1;
+					skb->csum_level = 1;
 #else
 						skb->encapsulation = 1;
 #endif
 #endif
-					ring->csum_ok++;
+				ring->csum_ok++;
 #ifdef CONFIG_COMPAT_LRO_ENABLED
 					/* traffic eligible for LRO */
 					if ((dev->features & NETIF_F_LRO) &&
@@ -1087,25 +1103,17 @@ xdp_drop_no_cnt:
 						goto next;
 					}
 #endif
-				} else {
-					goto csum_none;
-				}
 			} else {
-				if (priv->flags & MLX4_EN_FLAG_RX_CSUM_NON_TCP_UDP &&
-				    (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPV4 |
-							       MLX4_CQE_STATUS_IPV6))) {
-					if (check_csum(cqe, skb, va, dev->features)) {
-						goto csum_none;
-					} else {
-						ip_summed = CHECKSUM_COMPLETE;
-#ifdef HAVE_SKB_SET_HASH
-						hash_type = PKT_HASH_TYPE_L3;
-#endif
-						ring->csum_complete++;
-					}
-				} else {
+				if (!(priv->flags & MLX4_EN_FLAG_RX_CSUM_NON_TCP_UDP &&
+				      (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IP_ANY))))
 					goto csum_none;
-				}
+				if (check_csum(cqe, skb, va, dev->features))
+					goto csum_none;
+				ip_summed = CHECKSUM_COMPLETE;
+#ifdef HAVE_SKB_SET_HASH
+				hash_type = PKT_HASH_TYPE_L3;
+#endif
+				ring->csum_complete++;
 			}
 		} else {
 csum_none:

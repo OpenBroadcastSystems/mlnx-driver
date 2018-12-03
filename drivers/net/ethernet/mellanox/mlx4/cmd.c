@@ -2517,8 +2517,9 @@ int mlx4_multi_func_init(struct mlx4_dev *dev)
 		struct mlx4_vf_admin_state *vf_admin;
 
 		priv->mfunc.master.slave_state =
-			kzalloc(dev->num_slaves *
-				sizeof(struct mlx4_slave_state), GFP_KERNEL);
+			kcalloc(dev->num_slaves,
+				sizeof(struct mlx4_slave_state),
+				GFP_KERNEL);
 		for (i = 0; i < dev->num_slaves; i++)
 			priv->mfunc.master.slave_state[i].slave_gid_type = MLX4_ROCE_GID_TYPE_INVALID;
 
@@ -2526,14 +2527,16 @@ int mlx4_multi_func_init(struct mlx4_dev *dev)
 			goto err_comm;
 
 		priv->mfunc.master.vf_admin =
-			kzalloc(dev->num_slaves *
-				sizeof(struct mlx4_vf_admin_state), GFP_KERNEL);
+			kcalloc(dev->num_slaves,
+				sizeof(struct mlx4_vf_admin_state),
+				GFP_KERNEL);
 		if (!priv->mfunc.master.vf_admin)
 			goto err_comm_admin;
 
 		priv->mfunc.master.vf_oper =
-			kzalloc(dev->num_slaves *
-				sizeof(struct mlx4_vf_oper_state), GFP_KERNEL);
+			kcalloc(dev->num_slaves,
+				sizeof(struct mlx4_vf_oper_state),
+				GFP_KERNEL);
 		if (!priv->mfunc.master.vf_oper)
 			goto err_comm_oper;
 
@@ -2786,9 +2789,9 @@ int mlx4_cmd_use_events(struct mlx4_dev *dev)
 	int i;
 	int err = 0;
 
-	priv->cmd.context = kmalloc(priv->cmd.max_cmds *
-				   sizeof(struct mlx4_cmd_context),
-				   GFP_KERNEL);
+	priv->cmd.context = kmalloc_array(priv->cmd.max_cmds,
+					  sizeof(struct mlx4_cmd_context),
+					  GFP_KERNEL);
 	if (!priv->cmd.context)
 		return -ENOMEM;
 
@@ -3397,7 +3400,7 @@ int mlx4_get_vf_config(struct mlx4_dev *dev, int port, int vf, struct ifla_vf_in
 	ivf->vlan_proto		= s_info->vlan_proto;
 #endif
 
-#ifdef HAVE_TX_RATE_LIMIT
+#ifdef HAVE_VF_TX_RATE_LIMITS
 	if (mlx4_is_vf_vst_and_prio_qos(dev, port, s_info))
 		ivf->max_tx_rate = s_info->tx_rate;
 	else

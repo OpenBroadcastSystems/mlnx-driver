@@ -247,7 +247,12 @@ struct nvme_id_ctrl {
 	__le32			sanicap;
 	__le32			hmminds;
 	__le16			hmmaxd;
-	__u8			rsvd338[174];
+	__u8			rsvd338[4];
+	__u8			anatt;
+	__u8			anacap;
+	__le32			anagrpmax;
+	__le32			nanagrpid;
+	__u8			rsvd352[160];
 	__u8			sqes;
 	__u8			cqes;
 	__le16			maxcmd;
@@ -259,11 +264,12 @@ struct nvme_id_ctrl {
 	__le16			awun;
 	__le16			awupf;
 	__u8			nvscc;
-	__u8			rsvd531;
+	__u8			nwpc;
 	__le16			acwu;
 	__u8			rsvd534[2];
 	__le32			sgls;
-	__u8			rsvd540[228];
+	__le32			mnan;
+	__u8			rsvd544[224];
 	char			subnqn[256];
 	__u8			rsvd1024[768];
 	__le32			ioccsz;
@@ -284,9 +290,7 @@ enum {
 	NVME_CTRL_ONCS_TIMESTAMP		= 1 << 6,
 	NVME_CTRL_VWC_PRESENT			= 1 << 0,
 	NVME_CTRL_OACS_SEC_SUPP                 = 1 << 0,
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 	NVME_CTRL_OACS_DIRECTIVES		= 1 << 5,
-#endif
 	NVME_CTRL_OACS_DBBUF_SUPP		= 1 << 8,
 	NVME_CTRL_LPA_CMD_EFFECTS_LOG		= 1 << 1,
 };
@@ -319,7 +323,11 @@ struct nvme_id_ns {
 	__le16			nabspf;
 	__le16			noiob;
 	__u8			nvmcap[16];
-	__u8			rsvd64[40];
+	__u8			rsvd64[28];
+	__le32			anagrpid;
+	__u8			rsvd96[3];
+	__u8			nsattr;
+	__u8			rsvd100[4];
 	__u8			nguid[16];
 	__u8			eui64[8];
 	struct nvme_lbaf	lbaf[16];
@@ -338,7 +346,6 @@ enum {
 	NVME_ID_CNS_CTRL_LIST		= 0x13,
 };
 
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 enum {
 	NVME_DIR_IDENTIFY		= 0x00,
 	NVME_DIR_STREAMS		= 0x01,
@@ -351,7 +358,6 @@ enum {
 	NVME_DIR_RCV_ST_OP_RESOURCE	= 0x03,
 	NVME_DIR_ENDIR			= 0x01,
 };
-#endif
 
 enum {
 	NVME_NS_FEAT_THIN	= 1 << 0,
@@ -434,6 +440,32 @@ struct nvme_effects_log {
 	__u8   resv[2048];
 };
 
+enum nvme_ana_state {
+	NVME_ANA_OPTIMIZED		= 0x01,
+	NVME_ANA_NONOPTIMIZED		= 0x02,
+	NVME_ANA_INACCESSIBLE		= 0x03,
+	NVME_ANA_PERSISTENT_LOSS	= 0x04,
+	NVME_ANA_CHANGE			= 0x0f,
+};
+
+struct nvme_ana_group_desc {
+	__le32	grpid;
+	__le32	nnsids;
+	__le64	chgcnt;
+	__u8	state;
+	__u8	rsvd17[15];
+	__le32	nsids[];
+};
+
+/* flag for the log specific field of the ANA log */
+#define NVME_ANA_LOG_RGO	(1 << 0)
+
+struct nvme_ana_rsp_hdr {
+	__le64	chgcnt;
+	__le16	ngrps;
+	__le16	rsvd10[3];
+};
+
 enum {
 	NVME_SMART_CRIT_SPARE		= 1 << 0,
 	NVME_SMART_CRIT_TEMPERATURE	= 1 << 1,
@@ -453,11 +485,13 @@ enum {
 enum {
 	NVME_AER_NOTICE_NS_CHANGED	= 0x00,
 	NVME_AER_NOTICE_FW_ACT_STARTING = 0x01,
+	NVME_AER_NOTICE_ANA		= 0x03,
 };
 
 enum {
 	NVME_AEN_CFG_NS_ATTR		= 1 << 8,
 	NVME_AEN_CFG_FW_ACT		= 1 << 9,
+	NVME_AEN_CFG_ANA_CHANGE		= 1 << 11,
 };
 
 struct nvme_lba_range_type {
@@ -652,9 +686,7 @@ enum {
 	NVME_RW_PRINFO_PRCHK_APP	= 1 << 11,
 	NVME_RW_PRINFO_PRCHK_GUARD	= 1 << 12,
 	NVME_RW_PRINFO_PRACT		= 1 << 13,
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 	NVME_RW_DTYPE_STREAMS		= 1 << 4,
-#endif
 };
 
 struct nvme_dsm_cmd {
@@ -675,9 +707,7 @@ enum {
 	NVME_DSMGMT_AD		= 1 << 2,
 };
 
-#ifdef HAVE_BLK_RQ_NR_DISCARD_SEGMENTS
 #define NVME_DSM_MAX_RANGES	256
-#endif
 
 struct nvme_dsm_range {
 	__le32			cattr;
@@ -731,10 +761,8 @@ enum nvme_admin_opcode {
 	nvme_admin_download_fw		= 0x11,
 	nvme_admin_ns_attach		= 0x15,
 	nvme_admin_keep_alive		= 0x18,
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 	nvme_admin_directive_send	= 0x19,
 	nvme_admin_directive_recv	= 0x1a,
-#endif
 	nvme_admin_dbbuf		= 0x7C,
 	nvme_admin_format_nvm		= 0x80,
 	nvme_admin_security_send	= 0x81,
@@ -768,16 +796,26 @@ enum {
 	NVME_FEAT_HOST_ID	= 0x81,
 	NVME_FEAT_RESV_MASK	= 0x82,
 	NVME_FEAT_RESV_PERSIST	= 0x83,
+	NVME_FEAT_WRITE_PROTECT	= 0x84,
 	NVME_LOG_ERROR		= 0x01,
 	NVME_LOG_SMART		= 0x02,
 	NVME_LOG_FW_SLOT	= 0x03,
 	NVME_LOG_CHANGED_NS	= 0x04,
 	NVME_LOG_CMD_EFFECTS	= 0x05,
+	NVME_LOG_ANA		= 0x0c,
 	NVME_LOG_DISC		= 0x70,
 	NVME_LOG_RESERVATION	= 0x80,
 	NVME_FWACT_REPL		= (0 << 3),
 	NVME_FWACT_REPL_ACTV	= (1 << 3),
 	NVME_FWACT_ACTV		= (2 << 3),
+};
+
+/* NVMe Namespace Write Protect State */
+enum {
+	NVME_NS_NO_WRITE_PROTECT = 0,
+	NVME_NS_WRITE_PROTECT,
+	NVME_NS_WRITE_PROTECT_POWER_CYCLE,
+	NVME_NS_WRITE_PROTECT_PERMANENT,
 };
 
 #define NVME_MAX_CHANGED_NAMESPACES	1024
@@ -895,7 +933,7 @@ struct nvme_get_log_page_command {
 	__u64			rsvd2[2];
 	union nvme_data_ptr	dptr;
 	__u8			lid;
-	__u8			rsvd10;
+	__u8			lsp; /* upper 4 bits reserved */
 	__le16			numdl;
 	__le16			numdu;
 	__u16			rsvd11;
@@ -904,7 +942,6 @@ struct nvme_get_log_page_command {
 	__u32			rsvd14[2];
 };
 
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 struct nvme_directive_cmd {
 	__u8			opcode;
 	__u8			flags;
@@ -922,7 +959,6 @@ struct nvme_directive_cmd {
 
 	__u32			rsvd16[3];
 };
-#endif
 
 /*
  * Fabrics subcommands.
@@ -1054,7 +1090,6 @@ struct nvme_dbbuf {
 	__u32			rsvd12[6];
 };
 
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 struct streams_directive_params {
 	__le16	msl;
 	__le16	nssa;
@@ -1066,7 +1101,6 @@ struct streams_directive_params {
 	__le16	nso;
 	__u8	rsvd2[6];
 };
-#endif
 
 struct nvme_command {
 	union {
@@ -1088,9 +1122,7 @@ struct nvme_command {
 		struct nvmf_property_set_command prop_set;
 		struct nvmf_property_get_command prop_get;
 		struct nvme_dbbuf dbbuf;
-#ifdef HAVE_BLK_MAX_WRITE_HINTS
 		struct nvme_directive_cmd directive;
-#endif
 	};
 };
 
@@ -1131,6 +1163,8 @@ enum {
 
 	NVME_SC_SGL_INVALID_OFFSET	= 0x16,
 	NVME_SC_SGL_INVALID_SUBTYPE	= 0x17,
+
+	NVME_SC_NS_WRITE_PROTECTED	= 0x20,
 
 	NVME_SC_LBA_RANGE		= 0x80,
 	NVME_SC_CAP_EXCEEDED		= 0x81,
@@ -1200,6 +1234,13 @@ enum {
 	NVME_SC_COMPARE_FAILED		= 0x285,
 	NVME_SC_ACCESS_DENIED		= 0x286,
 	NVME_SC_UNWRITTEN_BLOCK		= 0x287,
+
+	/*
+	 * Path-related Errors:
+	 */
+	NVME_SC_ANA_PERSISTENT_LOSS	= 0x301,
+	NVME_SC_ANA_INACCESSIBLE	= 0x302,
+	NVME_SC_ANA_TRANSITION		= 0x303,
 
 	NVME_SC_DNR			= 0x4000,
 };

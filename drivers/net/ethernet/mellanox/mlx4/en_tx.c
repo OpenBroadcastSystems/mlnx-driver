@@ -734,7 +734,12 @@ static void build_inline_wqe(struct mlx4_en_tx_desc *tx_desc,
 #if defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
 u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
 #ifdef HAVE_SELECT_QUEUE_FALLBACK_T
-			 void *accel_priv, select_queue_fallback_t fallback)
+#ifdef HAVE_SELECT_QUEUE_NET_DEVICE
+			 struct net_device *sb_dev,
+#else
+			 void *accel_priv,
+#endif /* HAVE_SELECT_QUEUE_NET_DEVICE */
+			 select_queue_fallback_t fallback)
 #else
 			 void *accel_priv)
 #endif
@@ -746,12 +751,14 @@ u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb)
 	u16 rings_p_up = priv->num_tx_rings_p_up;
 
 	if (netdev_get_num_tc(dev))
-		return skb_tx_hash(dev, skb);
+#ifdef HAVE_SELECT_QUEUE_FALLBACK_T_3_PARAMS
+		return fallback(dev, skb, NULL);
 
-#ifdef HAVE_SELECT_QUEUE_FALLBACK_T
-	return fallback(dev, skb) % rings_p_up;
+	return fallback(dev, skb, NULL) % rings_p_up;
 #else
-	return __netdev_pick_tx(dev, skb) % rings_p_up;
+		return fallback(dev, skb);
+
+	return fallback(dev, skb) % rings_p_up;
 #endif
 }
 

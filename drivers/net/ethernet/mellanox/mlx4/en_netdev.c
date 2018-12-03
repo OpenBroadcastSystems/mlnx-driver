@@ -3137,8 +3137,9 @@ static int mlx4_en_alloc_resources(struct mlx4_en_priv *priv)
 
 		if (mlx4_en_create_rx_ring(priv, &priv->rx_ring[i],
 					   prof->rx_ring_size, priv->stride,
-					   node))
+					   node, i))
 			goto err;
+
 	}
 
 #ifdef HAVE_NETDEV_RX_CPU_RMAP
@@ -3196,13 +3197,15 @@ static int mlx4_en_copy_priv(struct mlx4_en_priv *dst,
 		if (!dst->tx_ring_num[t])
 			continue;
 
-		dst->tx_ring[t] = kzalloc(sizeof(struct mlx4_en_tx_ring *) *
-					  MAX_TX_RINGS, GFP_KERNEL);
+		dst->tx_ring[t] = kcalloc(MAX_TX_RINGS,
+					  sizeof(struct mlx4_en_tx_ring *),
+					  GFP_KERNEL);
 		if (!dst->tx_ring[t])
 			goto err_free_tx;
 
-		dst->tx_cq[t] = kzalloc(sizeof(struct mlx4_en_cq *) *
-					MAX_TX_RINGS, GFP_KERNEL);
+		dst->tx_cq[t] = kcalloc(MAX_TX_RINGS,
+					sizeof(struct mlx4_en_cq *),
+					GFP_KERNEL);
 		if (!dst->tx_cq[t]) {
 			kfree(dst->tx_ring[t]);
 			goto err_free_tx;
@@ -3419,7 +3422,7 @@ static int mlx4_en_change_mtu(struct net_device *dev, int new_mtu)
 	en_dbg(DRV, priv, "Change MTU called - current:%d new:%d\n",
 		 dev->mtu, new_mtu);
 
-	if ((new_mtu < MLX4_EN_MIN_MTU) || (new_mtu > priv->max_mtu)) {
+	if ((new_mtu < ETH_MIN_MTU) || (new_mtu > priv->max_mtu)) {
 		en_err(priv, "Bad MTU size:%d.\n", new_mtu);
 		return -EPERM;
 	}
@@ -3658,7 +3661,7 @@ static int mlx4_en_set_vf_vlan(struct net_device *dev, int vf, u16 vlan, u8 qos)
 }
 #endif /* HAVE_NDO_SET_VF_VLAN */
 
-#ifdef HAVE_TX_RATE_LIMIT
+#ifdef HAVE_VF_TX_RATE_LIMITS
 static int mlx4_en_set_vf_rate(struct net_device *dev, int vf, int min_tx_rate,
 			       int max_tx_rate)
 {
@@ -4120,7 +4123,9 @@ static int mlx4_xdp(struct net_device *dev, struct netdev_bpf *xdp)
 	case XDP_QUERY_PROG:
 #ifdef HAVE_BPF_PROG_AUX_FEILD_ID
 		xdp->prog_id = mlx4_xdp_query(dev);
+#ifdef HAVE_BPF_PROG_PROG_ATTACHED
 		xdp->prog_attached = !!xdp->prog_id;
+#endif
 #else
 		xdp->prog_attached = mlx4_xdp_attached(dev);
 #endif
@@ -4353,6 +4358,9 @@ int mlx4_en_netdev_event(struct notifier_block *this,
 		return NOTIFY_DONE;
 
 	priv = netdev_priv(ndev);
+	if (mlx4_is_slave(priv->mdev->dev))
+		return NOTIFY_DONE;
+
 	if (do_bond) {
 		struct netdev_notifier_bonding_info *notifier_info = ptr;
 		struct netdev_bonding_info *bonding_info =
@@ -4516,6 +4524,10 @@ void mlx4_en_set_stats_bitmap(struct mlx4_dev *dev,
 
 	bitmap_set(stats_bitmap->bitmap, last_i, NUM_XDP_STATS);
 	last_i += NUM_XDP_STATS;
+
+	if (!mlx4_is_slave(dev))
+		bitmap_set(stats_bitmap->bitmap, last_i, NUM_PHY_STATS);
+	last_i += NUM_PHY_STATS;
 }
 
 static void mlx4_en_set_netdev_ops(struct mlx4_en_priv *priv)
@@ -4544,7 +4556,7 @@ static void mlx4_en_set_netdev_ops(struct mlx4_en_priv *priv)
 		priv->dev_ops.extended.ndo_udp_tunnel_add = mlx4_en_add_vxlan_port;
 		priv->dev_ops.extended.ndo_udp_tunnel_del = mlx4_en_del_vxlan_port;
 #endif
-#ifdef HAVE_TX_RATE_LIMIT
+#ifdef HAVE_VF_TX_RATE_LIMITS
 		priv->dev_ops.ndo_set_vf_rate = mlx4_en_set_vf_rate;
 #elif defined(HAVE_VF_TX_RATE)
 		priv->dev_ops.ndo_set_vf_tx_rate =  mlx4_en_set_vf_tx_rate;
@@ -4679,16 +4691,17 @@ int mlx4_en_init_netdev(struct mlx4_en_dev *mdev, int port,
 		if (!priv->tx_ring_num[t])
 			continue;
 
-		priv->tx_ring[t] = kzalloc(sizeof(struct mlx4_en_tx_ring *) *
-					   MAX_TX_RINGS, GFP_KERNEL);
+		priv->tx_ring[t] = kcalloc(MAX_TX_RINGS,
+					   sizeof(struct mlx4_en_tx_ring *),
+					   GFP_KERNEL);
 		if (!priv->tx_ring[t]) {
 			err = -ENOMEM;
-			goto err_free_tx;
+			goto out;
 		}
-		priv->tx_cq[t] = kzalloc(sizeof(struct mlx4_en_cq *) *
-					 MAX_TX_RINGS, GFP_KERNEL);
+		priv->tx_cq[t] = kcalloc(MAX_TX_RINGS,
+					 sizeof(struct mlx4_en_cq *),
+					 GFP_KERNEL);
 		if (!priv->tx_cq[t]) {
-			kfree(priv->tx_ring[t]);
 			err = -ENOMEM;
 			goto out;
 		}
@@ -5011,16 +5024,16 @@ int mlx4_en_init_netdev(struct mlx4_en_dev *mdev, int port,
 				    NETIF_F_GSO_PARTIAL;
 		dev->gso_partial_features = NETIF_F_GSO_UDP_TUNNEL_CSUM;
 #else
-				    0;
+		0;
 #endif
 	}
 
 #ifdef HAVE_NET_DEVICE_MIN_MAX_MTU
-	/* MTU range: 46 - hw-specific max */
-	dev->min_mtu = MLX4_EN_MIN_MTU;
+	/* MTU range: 68 - hw-specific max */
+	dev->min_mtu = ETH_MIN_MTU;
 	dev->max_mtu = priv->max_mtu;
 #elif defined(HAVE_NET_DEVICE_MIN_MAX_MTU_EXTENDED)
-	dev->extended->min_mtu = MLX4_EN_MIN_MTU;
+	dev->extended->min_mtu = ETH_MIN_MTU;
 	dev->extended->max_mtu = priv->max_mtu;
 #endif
 
@@ -5164,11 +5177,6 @@ int mlx4_en_init_netdev(struct mlx4_en_dev *mdev, int port,
 
 	return 0;
 
-err_free_tx:
-	while (t--) {
-		kfree(priv->tx_ring[t]);
-		kfree(priv->tx_cq[t]);
-	}
 out:
 	mlx4_en_destroy_netdev(dev);
 	return err;
@@ -5223,10 +5231,6 @@ int mlx4_en_reset_config(struct net_device *dev,
 		port_up = 1;
 		mlx4_en_stop_port(dev, 1);
 	}
-
-	en_warn(priv, "Changing device configuration rx filter(%x) rx vlan(%x)\n",
-		ts_config.rx_filter,
-		!!(features & NETIF_F_HW_VLAN_CTAG_RX));
 
 	mlx4_en_safe_replace_resources(priv, tmp);
 
