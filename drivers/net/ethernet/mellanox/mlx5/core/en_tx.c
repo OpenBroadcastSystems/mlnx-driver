@@ -38,6 +38,15 @@
 #include "en_accel/en_accel.h"
 #include "lib/clock.h"
 
+
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * mlx5_netmap_linux.h contains functions for netmap support
+ * that extend the standard driver.
+ */
+#include "mlx5_netmap_linux.h"
+#endif
+
 #define MLX5E_SQ_NOPS_ROOM  MLX5_SEND_WQE_MAX_WQEBBS
 
 #if defined(CONFIG_MLX5_EN_TLS) && defined(HAVE_UAPI_LINUX_TLS_H)
@@ -550,6 +559,11 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget)
 
 	sq = container_of(cq, struct mlx5e_txqsq, cq);
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+	if (netmap_tx_irq(sq->channel->netdev, sq->channel->ix) != NM_IRQ_PASS)
+		return false;
+#endif
+
 	if (unlikely(!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state)))
 		return false;
 
@@ -676,15 +690,17 @@ void mlx5e_free_txqsq_descs(struct mlx5e_txqsq *sq)
 			continue;
 		}
 
-		for (i = 0; i < wi->num_dma; i++) {
-			struct mlx5e_sq_dma *dma =
-				mlx5e_dma_get(sq, sq->dma_fifo_cc++);
+		if (!nm_netmap_on(NA(sq->txq->dev))) {
+			/* do not free skbs in netmap mode */
+			for (i = 0; i < wi->num_dma; i++) {
+				struct mlx5e_sq_dma *dma =
+					mlx5e_dma_get(sq, sq->dma_fifo_cc++);
 
-			mlx5e_tx_dma_unmap(sq->pdev, dma);
+				mlx5e_tx_dma_unmap(sq->pdev, dma);
+			}
+			dev_kfree_skb_any(skb);
 		}
-
-		dev_kfree_skb_any(skb);
-		sq->cc += wi->num_wqebbs;
+        sq->cc += wi->num_wqebbs;
 	}
 }
 
