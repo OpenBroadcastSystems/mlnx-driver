@@ -878,6 +878,7 @@ static void ptys2ethtool_update_supported_port(unsigned long *mask,
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static u32 ptys_get_supported_port(struct mlx4_ptys_reg *ptys_reg)
 {
 	u32 eth_proto = be32_to_cpu(ptys_reg->eth_proto_cap);
@@ -907,6 +908,7 @@ static u32 ptys_get_supported_port(struct mlx4_ptys_reg *ptys_reg)
 	}
 	return 0;
 }
+#endif
 
 static u32 ptys_get_active_port(struct mlx4_ptys_reg *ptys_reg)
 {
@@ -1037,6 +1039,7 @@ void __init mlx4_en_init_ptys2ethtool_map(void)
 };
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static u32 deprecated_ptys2ethtool_map[MLX4_LINK_MODES_SZ][3] = {
 	[MLX4_100BASE_TX] = {
 		SUPPORTED_100baseT_Full,
@@ -1129,7 +1132,7 @@ static u32 deprecated_ptys2ethtool_map[MLX4_LINK_MODES_SZ][3] = {
 		SPEED_56000
 		},
 };
-
+#endif
 #ifdef HAVE_ETHTOOL_xLINKSETTINGS
 static void ptys2ethtool_update_link_modes(unsigned long *link_modes,
 					   u32 eth_proto,
@@ -1146,6 +1149,7 @@ static void ptys2ethtool_update_link_modes(unsigned long *link_modes,
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static u32 ptys2ethtool_link_modes(u32 eth_proto, enum ethtool_report report)
 {
 	int i;
@@ -1157,7 +1161,7 @@ static u32 ptys2ethtool_link_modes(u32 eth_proto, enum ethtool_report report)
 	}
 	return link_modes;
 }
-
+#endif
 #ifdef HAVE_ETHTOOL_xLINKSETTINGS
 static u32 ethtool2ptys_link_modes(const unsigned long *link_modes,
 				   enum ethtool_report report)
@@ -1177,6 +1181,7 @@ static u32 ethtool2ptys_link_modes(const unsigned long *link_modes,
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static u32 deprecated_ethtool2ptys_link_modes(u32 link_modes, enum ethtool_report report)
 {
 	int i;
@@ -1188,7 +1193,7 @@ static u32 deprecated_ethtool2ptys_link_modes(u32 link_modes, enum ethtool_repor
 	}
 	return ptys_modes;
 }
-
+#endif
 /* Convert actual speed (SPEED_XXX) to ptys link modes */
 static u32 speed2ptys_link_modes(u32 speed)
 {
@@ -1296,6 +1301,7 @@ ethtool_get_ptys_link_ksettings(struct net_device *dev,
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static int ethtool_get_ptys_settings(struct net_device *dev,
 				     struct ethtool_cmd *cmd)
 {
@@ -1371,7 +1377,7 @@ static int ethtool_get_ptys_settings(struct net_device *dev,
 
 	return ret;
 }
-
+#endif
 #ifdef HAVE_ETHTOOL_xLINKSETTINGS
 static void
 ethtool_get_default_link_ksettings(
@@ -1409,6 +1415,7 @@ ethtool_get_default_link_ksettings(
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static void ethtool_get_default_settings(struct net_device *dev,
 					 struct ethtool_cmd *cmd)
 {
@@ -1435,7 +1442,7 @@ static void ethtool_get_default_settings(struct net_device *dev,
 		cmd->transceiver = -1;
 	}
 }
-
+#endif
 #ifdef HAVE_ETHTOOL_xLINKSETTINGS
 static int
 mlx4_en_get_link_ksettings(struct net_device *dev,
@@ -1467,6 +1474,7 @@ mlx4_en_get_link_ksettings(struct net_device *dev,
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static int mlx4_en_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
@@ -1493,7 +1501,7 @@ static int mlx4_en_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 	}
 	return 0;
 }
-
+#endif
 /* Calculate PTYS admin according ethtool speed (SPEED_XXX) */
 static __be32 speed_set_ptys_admin(struct mlx4_en_priv *priv, u32 speed,
 				   __be32 proto_cap)
@@ -1602,6 +1610,7 @@ mlx4_en_set_link_ksettings(struct net_device *dev,
 }
 #endif
 
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static int mlx4_en_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
@@ -1666,7 +1675,7 @@ static int mlx4_en_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 	mutex_unlock(&priv->mdev->state_lock);
 	return 0;
 }
-
+#endif
 static int mlx4_en_get_coalesce(struct net_device *dev,
 			      struct ethtool_coalesce *coal)
 {
@@ -1754,8 +1763,8 @@ static int mlx4_en_set_pauseparam(struct net_device *dev,
 
 	tx_pause = !!(pause->tx_pause);
 	rx_pause = !!(pause->rx_pause);
-	rx_ppp = priv->prof->rx_ppp && !(tx_pause || rx_pause);
-	tx_ppp = priv->prof->tx_ppp && !(tx_pause || rx_pause);
+	rx_ppp = (tx_pause || rx_pause) ? 0 : priv->prof->rx_ppp;
+	tx_ppp = (tx_pause || rx_pause) ? 0 : priv->prof->tx_ppp;
 
 	err = mlx4_SET_PORT_general(mdev->dev, priv->port,
 				    priv->rx_skb_size + ETH_FCS_LEN,
@@ -3176,8 +3185,10 @@ const struct ethtool_ops mlx4_en_ethtool_ops = {
 	.get_link_ksettings = mlx4_en_get_link_ksettings,
 	.set_link_ksettings = mlx4_en_set_link_ksettings,
 #endif
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 	.get_settings = mlx4_en_get_settings,
 	.set_settings = mlx4_en_set_settings,
+#endif
 #ifdef LEGACY_ETHTOOL_OPS
 #ifdef HAVE_GET_SET_FLAGS
 	.get_flags = mlx4_en_get_flags,

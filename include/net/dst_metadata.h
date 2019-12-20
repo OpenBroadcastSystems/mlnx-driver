@@ -3,7 +3,7 @@
 
 #ifndef CONFIG_COMPAT_IP_TUNNELS
 #include_next <net/dst_metadata.h>
-#ifdef CONFIG_COMPAT_KERNEL_4_9
+#ifdef CONFIG_NET_SCHED_NEW
 static inline struct metadata_dst *backport__ip_tun_set_dst(__be32 saddr,
 							    __be32 daddr,
 							    __u8 tos, __u8 ttl,

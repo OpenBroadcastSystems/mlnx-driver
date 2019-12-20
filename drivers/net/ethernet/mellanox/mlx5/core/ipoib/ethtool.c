@@ -238,8 +238,9 @@ static int mlx5i_get_link_ksettings(struct net_device *netdev,
 
 	return 0;
 }
-#endif
 
+#endif
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static int mlx5i_get_settings(struct net_device *netdev,
 			      struct ethtool_cmd *ecmd)
 {
@@ -258,7 +259,7 @@ static int mlx5i_get_settings(struct net_device *netdev,
 		return -EINVAL;
 
 	ecmd->duplex = DUPLEX_FULL;
-	ecmd->port = PORT_OTHER;/* till define IB port type */
+	ecmd->port = PORT_OTHER;// FIXME: till define IB port type 
 	ecmd->phy_address = 255;
 	ecmd->autoneg = AUTONEG_DISABLE;
 
@@ -266,6 +267,7 @@ static int mlx5i_get_settings(struct net_device *netdev,
 
 	return 0;
 }
+#endif
 
 #ifndef HAVE_NETDEV_HW_FEATURES
 #if defined(HAVE_GET_SET_FLAGS) && defined(CONFIG_COMPAT_LRO_ENABLED_IPOIB)
@@ -326,8 +328,10 @@ const struct ethtool_ops mlx5i_ethtool_ops = {
 #ifdef HAVE_GET_SET_LINK_KSETTINGS
 	.get_link_ksettings = mlx5i_get_link_ksettings,
 #endif
-	.get_link           = ethtool_op_get_link,
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 	.get_settings       = mlx5i_get_settings,
+#endif
+	.get_link           = ethtool_op_get_link,
 /* IPoIB current code supports HW_FEATURES and doesn't
  * support EXTENDED_HW_FEATURES. If support for EXTENDED_HW_FEATURES
  * is added then this code and the set function should be masked
@@ -355,9 +359,11 @@ const struct ethtool_ops mlx5i_pkey_ethtool_ops = {
 #ifdef HAVE_GET_TS_INFO
 	.get_ts_info        = mlx5i_get_ts_info,
 #endif
-	.get_settings	    = mlx5i_get_settings,
 #ifdef HAVE_GET_SET_LINK_KSETTINGS
 	.get_link_ksettings = mlx5i_get_link_ksettings,
+#endif
+#ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
+	.get_settings	    = mlx5i_get_settings,
 #endif
 };
 

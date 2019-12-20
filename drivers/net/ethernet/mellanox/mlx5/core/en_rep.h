@@ -37,6 +37,7 @@
 #include <net/ip_tunnels.h>
 #endif
 #include <linux/rhashtable.h>
+#include <linux/mutex.h>
 #ifdef HAVE_REFCOUNT
 #include <linux/refcount.h>
 #else
@@ -68,7 +69,9 @@ struct mlx5e_rep_priv {
 	struct net_device      *netdev;
 	struct mlx5_flow_handle *vport_rx_rule;
 	struct list_head       vport_sqs_list;
+	spinlock_t	       tc_ht_lock; /* protects tc_ht */
 	struct rhashtable      tc_ht; /* valid for uplink rep */
+	struct list_head       unready_flows;
 };
 
 static inline
@@ -98,8 +101,10 @@ struct mlx5e_neigh_hash_entry {
 	 */
 	struct list_head neigh_list;
 
-#ifdef HAVE_TCF_TUNNEL_INFO
+	/* protects encap list */
+	spinlock_t encap_list_lock;
 	/* encap list sharing the same neigh */
+#ifdef HAVE_TCF_TUNNEL_INFO
 	struct list_head encap_list;
 
 	/* valid only when the neigh reference is taken during
@@ -126,6 +131,8 @@ struct mlx5e_neigh_hash_entry {
 #ifdef HAVE_TCF_TUNNEL_INFO
 	unsigned long reported_lastuse;
 #endif
+
+	struct rcu_head rcu;
 };
 
 #ifdef HAVE_TCF_TUNNEL_INFO
@@ -145,9 +152,17 @@ struct mlx5_encap_info {
 #endif
 
 struct mlx5e_encap_entry {
+	/* protects encap entry state */
+	struct mutex encap_entry_lock;
+
+	/* attached neigh hash entry */
+	struct mlx5e_neigh_hash_entry *nhe;
+
 	/* neigh hash entry list of encaps sharing the same neigh */
 #ifdef HAVE_TCF_TUNNEL_INFO
 	struct list_head encap_list;
+	/* neigh hash entry temporary list of encaps that need update */
+	struct list_head neigh_update_list;
 	struct mlx5e_neigh m_neigh;
 #endif
 	/* a node of the eswitch encap hash table which keeping all the encap
@@ -172,6 +187,9 @@ struct mlx5e_encap_entry {
 #else
 	struct neighbour *n;
 #endif
+	unsigned long updated;
+	refcount_t refcnt;
+	struct rcu_head rcu;
 };
 #endif
 
@@ -181,27 +199,12 @@ struct mlx5e_rep_sq {
 };
 
 void *mlx5e_alloc_nic_rep_priv(struct mlx5_core_dev *mdev);
-void mlx5e_register_vport_reps(struct mlx5e_priv *priv);
-void mlx5e_unregister_vport_reps(struct mlx5e_priv *priv);
+void mlx5e_rep_register_vport_reps(struct mlx5_core_dev *mdev);
+void mlx5e_rep_unregister_vport_reps(struct mlx5_core_dev *mdev);
 bool mlx5e_is_uplink_rep(struct mlx5e_priv *priv);
 int mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv);
 void mlx5e_remove_sqs_fwd_rules(struct mlx5e_priv *priv);
 
-#if defined(HAVE_NDO_GET_OFFLOAD_STATS) || defined(HAVE_NDO_GET_OFFLOAD_STATS_EXTENDED)
-int mlx5e_get_offload_stats(int attr_id, const struct net_device *dev, void *sp);
-#endif
-#if defined(NDO_HAS_OFFLOAD_STATS_GETS_NET_DEVICE) || defined(HAVE_NDO_HAS_OFFLOAD_STATS_EXTENDED)
-bool mlx5e_has_offload_stats(const struct net_device *dev, int attr_id);
-#endif
-
-#if (defined(HAVE_SWITCHDEV_OPS) && defined(CONFIG_NET_SWITCHDEV)) \
-    || defined(HAVE_SWITCHDEV_H_COMPAT)
-int mlx5e_attr_get(struct net_device *dev, struct switchdev_attr *attr);
-#endif
-#ifdef HAVE_SWITCHDEV_H_COMPAT
-ssize_t phys_switch_id_show(struct device *dev,
-			   struct device_attribute *attr, char *buf);
-#endif
 void mlx5e_handle_rx_cqe_rep(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe);
 
 #ifdef HAVE_TCF_TUNNEL_INFO
@@ -211,13 +214,20 @@ void mlx5e_rep_encap_entry_detach(struct mlx5e_priv *priv,
 				  struct mlx5e_encap_entry *e);
 #endif
 
+bool mlx5e_rep_neigh_entry_hold(struct mlx5e_neigh_hash_entry *nhe);
 void mlx5e_rep_queue_neigh_stats_work(struct mlx5e_priv *priv);
+bool mlx5e_rep_queue_neigh_update_work(struct mlx5e_priv *priv,
+				       struct mlx5e_neigh_hash_entry *nhe,
+				       struct neighbour *n);
+bool mlx5e_eswitch_rep(struct net_device *netdev);
 #else /* CONFIG_MLX5_ESWITCH */
-static inline void mlx5e_register_vport_reps(struct mlx5e_priv *priv) {}
-static inline void mlx5e_unregister_vport_reps(struct mlx5e_priv *priv) {}
 static inline bool mlx5e_is_uplink_rep(struct mlx5e_priv *priv) { return false; }
 static inline int mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv) { return 0; }
 static inline void mlx5e_remove_sqs_fwd_rules(struct mlx5e_priv *priv) {}
 #endif
 
+static inline bool mlx5e_is_vport_rep(struct mlx5e_priv *priv)
+{
+	return (MLX5_ESWITCH_MANAGER(priv->mdev) && priv->ppriv);
+}
 #endif /* __MLX5E_REP_H__ */

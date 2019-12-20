@@ -57,7 +57,7 @@
 #include "fw_qos.h"
 
 #define DRV_NAME	"mlx4_core"
-#define DRV_VERSION	"4.5-1.0.1"
+#define DRV_VERSION	"4.6-1.0.1"
 #define DRV_NAME_FOR_FW	"Linux-MLNX_EN," DRV_VERSION
 
 #define MLX4_FS_NUM_OF_L2_ADDR		8
@@ -92,7 +92,6 @@ enum {
 	MLX4_MIN_MGM_LOG_ENTRY_SIZE = 7,
 	MLX4_MAX_MGM_LOG_ENTRY_SIZE = 12,
 	MLX4_MAX_QP_PER_MGM = 4 * ((1 << MLX4_MAX_MGM_LOG_ENTRY_SIZE) / 16 - 2),
-	MLX4_MTT_ENTRY_PER_SEG	= 8,
 };
 
 enum {
@@ -575,8 +574,8 @@ struct slave_list {
 struct resource_allocator {
 	spinlock_t alloc_lock; /* protect quotas */
 	union {
-		int res_reserved;
-		int res_port_rsvd[MLX4_MAX_PORTS];
+		unsigned int res_reserved;
+		unsigned int res_port_rsvd[MLX4_MAX_PORTS];
 	};
 	union {
 		int res_free;
@@ -1088,7 +1087,12 @@ void mlx4_crdump_proc_init(struct proc_dir_entry *proc_core_dir);
 void mlx4_crdump_proc_cleanup(struct proc_dir_entry *proc_core_dir);
 int mlx4_crdump_init(struct mlx4_dev *dev);
 void mlx4_crdump_end(struct mlx4_dev *dev);
+#ifdef HAVE_DEVLINK_DRIVERINIT_VAL
+int mlx4_restart_one(struct pci_dev *pdev, bool reload,
+		     struct devlink *devlink);
+#else
 int mlx4_restart_one(struct pci_dev *pdev);
+#endif
 int mlx4_register_device(struct mlx4_dev *dev);
 void mlx4_unregister_device(struct mlx4_dev *dev);
 void mlx4_dispatch_event(struct mlx4_dev *dev, enum mlx4_dev_event type,
@@ -1272,9 +1276,7 @@ void mlx4_srq_event(struct mlx4_dev *dev, u32 srqn, int event_type);
 
 void mlx4_enter_error_state(struct mlx4_dev_persistent *persist);
 int mlx4_comm_internal_err(u32 slave_read);
-
 int mlx4_crdump_collect(struct mlx4_dev *dev);
-
 int mlx4_SENSE_PORT(struct mlx4_dev *dev, int port,
 		    enum mlx4_port_type *type);
 void mlx4_do_sense_ports(struct mlx4_dev *dev,

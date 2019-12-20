@@ -72,7 +72,7 @@ static void nvmet_bio_done(struct bio *bio, int error)
 static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 {
 	int sg_cnt = req->sg_cnt;
-	struct bio *bio = &req->b.inline_bio;
+	struct bio *bio;
 	struct scatterlist *sg;
 	sector_t sector;
 #ifdef HAVE_SUBMIT_BIO_1_PARAM
@@ -98,16 +98,24 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 		op = REQ_OP_READ;
 	}
 
+	if (is_pci_p2pdma_page(sg_page(req->sg)))
+		op_flags |= REQ_NOMERGE;
+
 	sector = le64_to_cpu(req->cmd->rw.slba);
 	sector <<= (req->ns->blksize_shift - 9);
 
+	if (req->data_len <= NVMET_MAX_INLINE_DATA_LEN) {
+		bio = &req->b.inline_bio;
 #ifdef HAVE_BIO_INIT_3_PARAMS
-	bio_init(bio, req->inline_bvec, ARRAY_SIZE(req->inline_bvec));
+		bio_init(bio, req->inline_bvec, ARRAY_SIZE(req->inline_bvec));
 #else
 	bio_init(bio);
 	bio->bi_io_vec = req->inline_bvec;
 	bio->bi_max_vecs = ARRAY_SIZE(req->inline_bvec);
 #endif
+	} else {
+		bio = bio_alloc(GFP_KERNEL, min(sg_cnt, BIO_MAX_PAGES));
+	}
 #ifdef HAVE_BIO_BI_DISK
 	bio_set_dev(bio, req->ns->bdev);
 #else

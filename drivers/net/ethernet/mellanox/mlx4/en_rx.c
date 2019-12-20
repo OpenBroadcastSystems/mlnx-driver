@@ -80,7 +80,7 @@ static struct page *mlx4_alloc_page(struct mlx4_en_priv *priv,
 	if (unlikely(dma_mapping_error(priv->ddev, *dma))) {
 		__free_page(page);
 		return NULL;
-	}
+       }
 	return page;
 }
 
@@ -130,6 +130,8 @@ static bool mlx4_en_is_ring_empty(const struct mlx4_en_rx_ring *ring)
 
 static inline void mlx4_en_update_rx_prod_db(struct mlx4_en_rx_ring *ring)
 {
+	/* ensure rx_desc updating reaches HW before prod db updating */
+	wmb();
 	*ring->wqres.db.db = cpu_to_be32(ring->prod & 0xffff);
 }
 
@@ -625,7 +627,6 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 	int *truesize = &skb->truesize;
 #endif
 	int nr, actual_nr, frag_size;
-
 	/* Make sure we can replenish RX ring with new page frags,
 	 * otherwise we drop this packet. Very sad but true.
 	 */
@@ -640,7 +641,6 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 
 	for (nr = 0;; frag_info++, frags++) {
 		frag_size = min_t(int, length, frag_info->frag_size);
-
 		if (frag_size) {
 			dma_sync_single_range_for_cpu(priv->ddev, frags->dma,
 						      frags->page_offset,
@@ -657,11 +657,7 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 			skb_frags_rx[nr].page_offset = frags->page_offset;
 #endif
 			*truesize += frag_info->frag_stride;
-#ifdef HAVE_PAGE_REF_COUNT_ADD_SUB_INC
 			page_ref_inc(frags->page);
-#else
-			atomic_inc(&frags->page->_count);
-#endif
 			length -= frag_size;
 			actual_nr++;
 		}
@@ -671,13 +667,13 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 		frags->page_offset = frag_info->page_offset;
 		frag_info->page_offset += frag_info->frag_stride;
 		if (++nr == priv->num_frags)
-			break;
-	}
+ 			break;
+ 	}
 #ifdef CONFIG_COMPAT_LRO_ENABLED
 	return actual_nr;
 #endif
-	return 0;
-}
+ 	return 0;
+ }
 
 static void validate_loopback(struct mlx4_en_priv *priv, void *va)
 {
@@ -790,6 +786,8 @@ static void mlx4_en_inline_scatter(struct mlx4_en_rx_ring *ring,
 	ring->inline_scatter++;
 }
 
+#define short_frame(size) ((size) <= ETH_ZLEN + ETH_FCS_LEN)
+
 /* We reach this function only after checking that any of
  * the (IPv4 | IPv6) bits are set in cqe->status.
  */
@@ -797,9 +795,20 @@ static int check_csum(struct mlx4_cqe *cqe, struct sk_buff *skb, void *va,
 		      netdev_features_t dev_features)
 {
 	__wsum hw_checksum = 0;
+	void *hdr;
 
-	void *hdr = (u8 *)va + sizeof(struct ethhdr);
+	/* CQE csum doesn't cover padding octets in short ethernet
+	 * frames. And the pad field is appended prior to calculating
+	 * and appending the FCS field.
+	 *
+	 * Detecting these padded frames requires to verify and parse
+	 * IP headers, so we simply force all those small frames to skip
+	 * checksum complete.
+	 */
+	if (short_frame(skb->len))
+		return -EINVAL;
 
+	hdr = (u8 *)va + sizeof(struct ethhdr);
 	hw_checksum = csum_unfold((__force __sum16)cqe->checksum);
 
 	if (cqe->vlan_my_qpn & cpu_to_be32(MLX4_CQE_CVLAN_PRESENT_MASK) &&
@@ -1024,9 +1033,11 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 				goto xdp_drop_no_cnt; /* Drop on xmit failure */
 			default:
 				bpf_warn_invalid_xdp_action(act);
+				/* fall through */
 			case XDP_ABORTED:
 #if defined(HAVE_TRACE_XDP_EXCEPTION) && !defined(MLX_DISABLE_TRACEPOINTS)
 				trace_xdp_exception(dev, xdp_prog, act);
+				/* fall through */
 #endif
 			case XDP_DROP:
 				ring->xdp_drop++;
@@ -1052,6 +1063,11 @@ xdp_drop_no_cnt:
 		skb_record_rx_queue(skb, cq_ring);
 
 		if (likely(dev->features & NETIF_F_RXCSUM)) {
+			/* TODO: For IP non TCP/UDP packets when csum complete is
+			 * not an option (not supported or any other reason) we can
+			 * actually check cqe IPOK status bit and report
+			 * CHECKSUM_UNNECESSARY rather than CHECKSUM_NONE
+			 */
 			if ((cqe->status & cpu_to_be16(MLX4_CQE_STATUS_TCP |
 						       MLX4_CQE_STATUS_UDP)) &&
 			    (cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPOK)) &&

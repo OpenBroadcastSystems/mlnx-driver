@@ -40,6 +40,7 @@
 #include <linux/sed-opal.h>
 #endif
 #include <linux/sizes.h>
+#include <linux/pci-p2pdma.h>
 
 #include "nvme.h"
 
@@ -129,13 +130,8 @@ struct nvme_dev {
 	struct work_struct remove_work;
 	struct mutex shutdown_lock;
 	bool subsystem;
-	void __iomem *cmb;
-#ifdef HAVE_PCI_BUS_ADDR_T
-	pci_bus_addr_t cmb_bus_addr;
-#else
-	dma_addr_t cmb_dma_addr;
-#endif
 	u64 cmb_size;
+	bool cmb_use_sqes;
 	u32 cmbsz;
 	u32 cmbloc;
 	struct nvme_ctrl ctrl;
@@ -204,11 +200,11 @@ struct nvme_queue {
 	struct device *q_dmadev;
 	struct nvme_dev *dev;
 #ifndef HAVE_PCI_FREE_IRQ
-	char irqname[24];       /* nvme4294967295-65535\0 */
+	char irqname[24];	/* nvme4294967295-65535\0 */
 #endif
 	spinlock_t sq_lock;
 	struct nvme_command *sq_cmds;
-	struct nvme_command __iomem *sq_cmds_io;
+	bool sq_cmds_is_io;
 	spinlock_t cq_lock ____cacheline_aligned_in_smp;
 	volatile struct nvme_completion *cqes;
 	struct blk_mq_tags **tags;
@@ -626,20 +622,27 @@ static int nvme_admin_init_request(void *data, struct request *req,
 }
 #endif
 
-#ifdef HAVE_BLK_MQ_OPS_MAP_QUEUES
+#if defined(HAVE_BLK_MQ_OPS_MAP_QUEUES) && \
+	(defined(HAVE_PCI_IRQ_GET_AFFINITY) || \
+	defined(HAVE_BLK_MQ_PCI_MAP_QUEUES_3_ARGS))
 static int nvme_pci_map_queues(struct blk_mq_tag_set *set)
 {
 	struct nvme_dev *dev = set->driver_data;
 
 #if defined(HAVE_PCI_IRQ_API) && defined(HAVE_IRQ_CALC_AFFINITY_VECTORS_3_ARGS)
 #ifdef HAVE_BLK_MQ_PCI_MAP_QUEUES_3_ARGS
-	return blk_mq_pci_map_queues(set, to_pci_dev(dev->dev),
+#ifdef HAVE_BLK_MQ_QUEUE_MAP
+	return blk_mq_pci_map_queues(&set->map[0], to_pci_dev(dev->dev),
 			dev->num_vecs > 1 ? 1 /* admin queue */ : 0);
 #else
+	return blk_mq_pci_map_queues(set, to_pci_dev(dev->dev),
+			dev->num_vecs > 1 ? 1 /* admin queue */ : 0);
+#endif
+#else /* HAVE_BLK_MQ_PCI_MAP_QUEUES_3_ARGS */
 	return __blk_mq_pci_map_queues(set, to_pci_dev(dev->dev),
 			dev->num_vecs > 1 ? 1 /* admin queue */ : 0);
 #endif
-#else
+#else /* HAVE_PCI_IRQ_API && HAVE_IRQ_CALC_AFFINITY_VECTORS_3_ARGS */
 #ifdef HAVE_BLK_MQ_PCI_MAP_QUEUES_3_ARGS
 	return blk_mq_pci_map_queues(set, to_pci_dev(dev->dev), 0);
 #else
@@ -657,11 +660,8 @@ static int nvme_pci_map_queues(struct blk_mq_tag_set *set)
 static void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd)
 {
 	spin_lock(&nvmeq->sq_lock);
-	if (nvmeq->sq_cmds_io)
-		memcpy_toio(&nvmeq->sq_cmds_io[nvmeq->sq_tail], cmd,
-				sizeof(*cmd));
-	else
-		memcpy(&nvmeq->sq_cmds[nvmeq->sq_tail], cmd, sizeof(*cmd));
+
+	memcpy(&nvmeq->sq_cmds[nvmeq->sq_tail], cmd, sizeof(*cmd));
 
 	if (++nvmeq->sq_tail == nvmeq->q_depth)
 		nvmeq->sq_tail = 0;
@@ -762,73 +762,6 @@ static void nvme_free_iod(struct nvme_dev *dev, struct request *req)
 	if (iod->sg != iod->inline_sg)
 		mempool_free(iod->sg, dev->iod_mempool);
 }
-
-#if defined(CONFIG_BLK_DEV_INTEGRITY) && defined(HAVE_BLK_TYPES_REQ_INTEGRITY)
-static void nvme_dif_prep(u32 p, u32 v, struct t10_pi_tuple *pi)
-{
-	if (be32_to_cpu(pi->ref_tag) == v)
-		pi->ref_tag = cpu_to_be32(p);
-}
-
-static void nvme_dif_complete(u32 p, u32 v, struct t10_pi_tuple *pi)
-{
-	if (be32_to_cpu(pi->ref_tag) == p)
-		pi->ref_tag = cpu_to_be32(v);
-}
-
-/**
- * nvme_dif_remap - remaps ref tags to bip seed and physical lba
- *
- * The virtual start sector is the one that was originally submitted by the
- * block layer.	Due to partitioning, MD/DM cloning, etc. the actual physical
- * start sector may be different. Remap protection information to match the
- * physical LBA on writes, and back to the original seed on reads.
- *
- * Type 0 and 3 do not have a ref tag, so no remapping required.
- */
-static void nvme_dif_remap(struct request *req,
-			void (*dif_swap)(u32 p, u32 v, struct t10_pi_tuple *pi))
-{
-	struct nvme_ns *ns = req->rq_disk->private_data;
-	struct bio_integrity_payload *bip;
-	struct t10_pi_tuple *pi;
-	void *p, *pmap;
-	u32 i, nlb, ts, phys, virt;
-
-	if (!ns->pi_type || ns->pi_type == NVME_NS_DPS_PI_TYPE3)
-		return;
-
-	bip = bio_integrity(req->bio);
-	if (!bip)
-		return;
-
-	pmap = kmap_atomic(bip->bip_vec->bv_page) + bip->bip_vec->bv_offset;
-
-	p = pmap;
-	virt = bip_get_seed(bip);
-	phys = nvme_block_nr(ns, blk_rq_pos(req));
-	nlb = (blk_rq_bytes(req) >> ns->lba_shift);
-	ts = ns->disk->queue->integrity.tuple_size;
-
-	for (i = 0; i < nlb; i++, virt++, phys++) {
-		pi = (struct t10_pi_tuple *)p;
-		dif_swap(phys, virt, pi);
-		p += ts;
-	}
-	kunmap_atomic(pmap);
-}
-#else /* CONFIG_BLK_DEV_INTEGRITY */
-static void nvme_dif_remap(struct request *req,
-			void (*dif_swap)(u32 p, u32 v, struct t10_pi_tuple *pi))
-{
-}
-static void nvme_dif_prep(u32 p, u32 v, struct t10_pi_tuple *pi)
-{
-}
-static void nvme_dif_complete(u32 p, u32 v, struct t10_pi_tuple *pi)
-{
-}
-#endif
 
 #ifdef HAVE_ONCE_H
 static void nvme_print_sgl(struct scatterlist *sgl, int nents)
@@ -1061,11 +994,17 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
 		goto out;
 
 	ret = BLK_STS_RESOURCE;
-#ifdef HAVE_DMA_ATTR_NO_WARN
-	nr_mapped = dma_map_sg_attrs(dev->dev, iod->sg, iod->nents, dma_dir,
-			DMA_ATTR_NO_WARN);
+
+	if (is_pci_p2pdma_page(sg_page(iod->sg)))
+		nr_mapped = pci_p2pdma_map_sg(dev->dev, iod->sg, iod->nents,
+					  dma_dir);
+	else
+#if defined(HAVE_DMA_ATTR_NO_WARN) && \
+	defined(HAVE_DMA_SET_ATTR_TAKES_UNSIGNED_LONG_ATTRS)
+		nr_mapped = dma_map_sg_attrs(dev->dev, iod->sg, iod->nents,
+					     dma_dir,  DMA_ATTR_NO_WARN);
 #else
-	nr_mapped = dma_map_sg(dev->dev, iod->sg, iod->nents, dma_dir);
+		nr_mapped = dma_map_sg(dev->dev, iod->sg, iod->nents, dma_dir);
 #endif
 	if (!nr_mapped)
 		goto out;
@@ -1087,19 +1026,12 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
 		if (blk_rq_map_integrity_sg(q, req->bio, &iod->meta_sg) != 1)
 			goto out_unmap;
 
-#ifdef HAVE_REQ_OP
-		if (req_op(req) == REQ_OP_WRITE)
-#else
-		if (rq_data_dir(req))
-#endif
-			nvme_dif_remap(req, nvme_dif_prep);
-
 		if (!dma_map_sg(dev->dev, &iod->meta_sg, 1, dma_dir))
 			goto out_unmap;
+
+		cmnd->rw.metadata = cpu_to_le64(sg_dma_address(&iod->meta_sg));
 	}
 
-	if (blk_integrity_rq(req))
-		cmnd->rw.metadata = cpu_to_le64(sg_dma_address(&iod->meta_sg));
 	return BLK_STS_OK;
 
 out_unmap:
@@ -1115,16 +1047,12 @@ static void nvme_unmap_data(struct nvme_dev *dev, struct request *req)
 			DMA_TO_DEVICE : DMA_FROM_DEVICE;
 
 	if (iod->nents) {
-		dma_unmap_sg(dev->dev, iod->sg, iod->nents, dma_dir);
-		if (blk_integrity_rq(req)) {
-#ifdef HAVE_REQ_OP
-			if (req_op(req) == REQ_OP_READ)
-#else
-			if (!rq_data_dir(req))
-#endif
-				nvme_dif_remap(req, nvme_dif_complete);
+		/* P2PDMA requests do not need to be unmapped */
+		if (!is_pci_p2pdma_page(sg_page(iod->sg)))
+			dma_unmap_sg(dev->dev, iod->sg, iod->nents, dma_dir);
+
+		if (blk_integrity_rq(req))
 			dma_unmap_sg(dev->dev, &iod->meta_sg, 1, dma_dir);
-		}
 	}
 
 	nvme_cleanup_cmd(req);
@@ -1308,12 +1236,21 @@ static int __nvme_poll(struct nvme_queue *nvmeq, unsigned int tag)
 }
 
 #ifdef HAVE_BLK_MQ_OPS_POLL
+#ifdef HAVE_BLK_MQ_POLL_FN_1_ARG
+static int nvme_poll(struct blk_mq_hw_ctx *hctx)
+{
+	struct nvme_queue *nvmeq = hctx->driver_data;
+
+	return __nvme_poll(nvmeq, -1);
+}
+#else
 static int nvme_poll(struct blk_mq_hw_ctx *hctx, unsigned int tag)
 {
 	struct nvme_queue *nvmeq = hctx->driver_data;
 
 	return __nvme_poll(nvmeq, tag);
 }
+#endif
 #endif
 
 static void nvme_pci_submit_async_event(struct nvme_ctrl *ctrl)
@@ -1588,9 +1525,18 @@ static void nvme_free_queue(struct nvme_queue *nvmeq)
 {
 	dma_free_coherent(nvmeq->q_dmadev, CQ_SIZE(nvmeq->q_depth),
 				(void *)nvmeq->cqes, nvmeq->cq_dma_addr);
-	if (nvmeq->sq_cmds)
-		dma_free_coherent(nvmeq->q_dmadev, SQ_SIZE(nvmeq->q_depth),
-					nvmeq->sq_cmds, nvmeq->sq_dma_addr);
+
+	if (nvmeq->sq_cmds) {
+		if (nvmeq->sq_cmds_is_io)
+			pci_free_p2pmem(to_pci_dev(nvmeq->q_dmadev),
+					nvmeq->sq_cmds,
+					SQ_SIZE(nvmeq->q_depth));
+		else
+			dma_free_coherent(nvmeq->q_dmadev,
+					  SQ_SIZE(nvmeq->q_depth),
+					  nvmeq->sq_cmds,
+					  nvmeq->sq_dma_addr);
+	}
 }
 
 static void nvme_free_queues(struct nvme_dev *dev, int lowest)
@@ -1605,7 +1551,7 @@ static void nvme_free_queues(struct nvme_dev *dev, int lowest)
 
 /**
  * nvme_suspend_queue - put queue into suspended state
- * @nvmeq - queue to suspend
+ * @nvmeq: queue to suspend
  */
 static int nvme_suspend_queue(struct nvme_queue *nvmeq)
 {
@@ -1702,12 +1648,21 @@ static int nvme_cmb_qdepth(struct nvme_dev *dev, int nr_io_queues,
 static int nvme_alloc_sq_cmds(struct nvme_dev *dev, struct nvme_queue *nvmeq,
 				int qid, int depth)
 {
-	/* CMB SQEs will be mapped before creation */
-	if (qid && dev->cmb && use_cmb_sqes && (dev->cmbsz & NVME_CMBSZ_SQS))
-		return 0;
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
-	nvmeq->sq_cmds = dma_alloc_coherent(dev->dev, SQ_SIZE(depth),
-					    &nvmeq->sq_dma_addr, GFP_KERNEL);
+	if (qid && dev->cmb_use_sqes && (dev->cmbsz & NVME_CMBSZ_SQS)) {
+		nvmeq->sq_cmds = pci_alloc_p2pmem(pdev, SQ_SIZE(depth));
+		nvmeq->sq_dma_addr = pci_p2pmem_virt_to_bus(pdev,
+						nvmeq->sq_cmds);
+		nvmeq->sq_cmds_is_io = true;
+	}
+
+	if (!nvmeq->sq_cmds) {
+		nvmeq->sq_cmds = dma_alloc_coherent(dev->dev, SQ_SIZE(depth),
+					&nvmeq->sq_dma_addr, GFP_KERNEL);
+		nvmeq->sq_cmds_is_io = false;
+	}
+
 	if (!nvmeq->sq_cmds)
 		return -ENOMEM;
 	return 0;
@@ -1800,17 +1755,6 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 	int result;
 	s16 vector;
 
-	if (dev->cmb && use_cmb_sqes && (dev->cmbsz & NVME_CMBSZ_SQS)) {
-		unsigned offset = (qid - 1) * roundup(SQ_SIZE(nvmeq->q_depth),
-						      dev->ctrl.page_size);
-#ifdef HAVE_PCI_BUS_ADDR_T
-		nvmeq->sq_dma_addr = dev->cmb_bus_addr + offset;
-#else
-		nvmeq->sq_dma_addr = dev->cmb_dma_addr + offset;
-#endif
-		nvmeq->sq_cmds_io = dev->cmb + offset;
-	}
-
 	/*
 	 * A queue's vector matches the queue identifier unless the controller
 	 * has only one vector available.
@@ -1886,7 +1830,9 @@ static struct blk_mq_ops nvme_mq_ops = {
 #endif
 	.init_hctx	= nvme_init_hctx,
 	.init_request	= nvme_init_request,
-#ifdef HAVE_BLK_MQ_OPS_MAP_QUEUES
+#if defined(HAVE_BLK_MQ_OPS_MAP_QUEUES) && \
+	(defined(HAVE_PCI_IRQ_GET_AFFINITY) || \
+	defined(HAVE_BLK_MQ_PCI_MAP_QUEUES_3_ARGS))
 	.map_queues	= nvme_pci_map_queues,
 #endif
 	.timeout	= nvme_timeout,
@@ -2094,28 +2040,20 @@ static void nvme_map_cmb(struct nvme_dev *dev)
 	u64 size, offset;
 	resource_size_t bar_size;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
-#ifdef HAVE_PCI_BUS_ADDR_T
 	int bar;
-#else
-	dma_addr_t dma_addr;
-#endif
+
+	if (dev->cmb_size)
+		return;
 
 	dev->cmbsz = readl(dev->bar + NVME_REG_CMBSZ);
 	if (!dev->cmbsz)
 		return;
 	dev->cmbloc = readl(dev->bar + NVME_REG_CMBLOC);
 
-	if (!use_cmb_sqes)
-		return;
-
 	size = nvme_cmb_size_unit(dev) * nvme_cmb_size(dev);
 	offset = nvme_cmb_size_unit(dev) * NVME_CMB_OFST(dev->cmbloc);
-#ifdef HAVE_PCI_BUS_ADDR_T
 	bar = NVME_CMB_BIR(dev->cmbloc);
 	bar_size = pci_resource_len(pdev, bar);
-#else
-	bar_size = pci_resource_len(pdev, NVME_CMB_BIR(dev->cmbloc));
-#endif
 
 	if (offset > bar_size)
 		return;
@@ -2128,21 +2066,18 @@ static void nvme_map_cmb(struct nvme_dev *dev)
 	if (size > bar_size - offset)
 		size = bar_size - offset;
 
-#ifdef HAVE_PCI_BUS_ADDR_T
-	dev->cmb = ioremap_wc(pci_resource_start(pdev, bar) + offset, size);
-#else
-	dma_addr = pci_resource_start(pdev, NVME_CMB_BIR(dev->cmbloc)) + offset;
-	dev->cmb = ioremap_wc(dma_addr, size);
-#endif
-	if (!dev->cmb)
+	if (pci_p2pdma_add_resource(pdev, bar, size, offset)) {
+		dev_warn(dev->ctrl.device,
+			 "failed to register the CMB\n");
 		return;
+	}
 
-#ifdef HAVE_PCI_BUS_ADDR_T
-	dev->cmb_bus_addr = pci_bus_address(pdev, bar) + offset;
-#else
-	dev->cmb_dma_addr = dma_addr;
-#endif
 	dev->cmb_size = size;
+	dev->cmb_use_sqes = use_cmb_sqes && (dev->cmbsz & NVME_CMBSZ_SQS);
+
+	if ((dev->cmbsz & (NVME_CMBSZ_WDS | NVME_CMBSZ_RDS)) ==
+			(NVME_CMBSZ_WDS | NVME_CMBSZ_RDS))
+		pci_p2pmem_publish(pdev, true);
 
 	if (sysfs_add_file_to_group(&dev->ctrl.device->kobj,
 				    &dev_attr_cmb.attr, NULL))
@@ -2152,12 +2087,10 @@ static void nvme_map_cmb(struct nvme_dev *dev)
 
 static inline void nvme_release_cmb(struct nvme_dev *dev)
 {
-	if (dev->cmb) {
-		iounmap(dev->cmb);
-		dev->cmb = NULL;
+	if (dev->cmb_size) {
 		sysfs_remove_file_from_group(&dev->ctrl.device->kobj,
 					     &dev_attr_cmb.attr, NULL);
-		dev->cmbsz = 0;
+		dev->cmb_size = 0;
 	}
 }
 
@@ -2378,13 +2311,13 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	if (nr_io_queues == 0)
 		return 0;
 
-	if (dev->cmb && (dev->cmbsz & NVME_CMBSZ_SQS)) {
+	if (dev->cmb_use_sqes) {
 		result = nvme_cmb_qdepth(dev, nr_io_queues,
 				sizeof(struct nvme_command));
 		if (result > 0)
 			dev->q_depth = result;
 		else
-			nvme_release_cmb(dev);
+			dev->cmb_use_sqes = false;
 	}
 
 	if (dev->num_p2p_queues) {
@@ -2685,7 +2618,6 @@ static void nvme_pci_disable(struct nvme_dev *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
-	nvme_release_cmb(dev);
 #ifdef HAVE_PCI_IRQ_API
 	pci_free_irq_vectors(pdev);
 #else
@@ -2962,7 +2894,8 @@ static int nvme_pci_get_address(struct nvme_ctrl *ctrl, char *buf, int size)
 static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.name			= "pcie",
 	.module			= THIS_MODULE,
-	.flags			= NVME_F_METADATA_SUPPORTED,
+	.flags			= NVME_F_METADATA_SUPPORTED |
+				  NVME_F_PCI_P2PDMA,
 	.reg_read32		= nvme_pci_reg_read32,
 	.reg_write32		= nvme_pci_reg_write32,
 	.reg_read64		= nvme_pci_reg_read64,
@@ -3193,19 +3126,19 @@ static void nvme_remove(struct pci_dev *pdev)
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
 
 	nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_DELETING);
-
-	cancel_work_sync(&dev->ctrl.reset_work);
 	pci_set_drvdata(pdev, NULL);
 
 	if (!pci_device_is_present(pdev)) {
 		nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_DEAD);
 		nvme_dev_disable(dev, true);
+		nvme_dev_remove_admin(dev);
 	}
 
 	flush_work(&dev->ctrl.reset_work);
 	nvme_stop_ctrl(&dev->ctrl);
 	nvme_remove_namespaces(&dev->ctrl);
 	nvme_dev_disable(dev, true);
+	nvme_release_cmb(dev);
 	nvme_free_host_mem(dev);
 	nvme_dev_remove_admin(dev);
 	nvme_free_queues(dev, 0);
@@ -3278,7 +3211,6 @@ static void nvme_error_resume(struct pci_dev *pdev)
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
 
 	flush_work(&dev->ctrl.reset_work);
-	pci_cleanup_aer_uncorrect_error_status(pdev);
 }
 
 static const struct pci_error_handlers nvme_err_handler = {

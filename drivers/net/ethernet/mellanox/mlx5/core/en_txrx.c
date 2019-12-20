@@ -34,6 +34,7 @@
 #include <linux/irq.h>
 #endif
 #include "en.h"
+#include "en/xdp.h"
 
 #if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
 static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)
@@ -78,16 +79,29 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 {
 	struct mlx5e_channel *c = container_of(napi, struct mlx5e_channel,
 					       napi);
+	struct mlx5e_ch_stats *ch_stats = c->stats;
 	bool busy = false;
 	int work_done = 0;
 	int i;
 
+	ch_stats->poll++;
 #ifndef HAVE_NAPI_STATE_MISSED
 	clear_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags);
 #endif
+
 	for (i = 0; i < c->num_tc; i++)
 		busy |= mlx5e_poll_tx_cq(&c->sq[i].cq, budget);
-#ifdef HAVE_NETDEV_BPF
+
+#ifdef CONFIG_MLX5_EN_SPECIAL_SQ
+	for (i = 0; i < c->num_special_sq; i++)
+		busy |= mlx5e_poll_tx_cq(&c->special_sq[i].cq, budget);
+#endif
+
+#ifdef HAVE_XDP_REDIRECT
+	busy |= mlx5e_poll_xdpsq_cq(&c->xdpsq.cq);
+#endif
+
+#ifdef HAVE_XDP_BUFF
 	if (c->xdp)
 		busy |= mlx5e_poll_xdpsq_cq(&c->rq.xdpsq.cq);
 #endif
@@ -103,6 +117,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	if (busy) {
 		if (likely(mlx5e_channel_no_affinity_change(c)))
 			return budget;
+		ch_stats->aff_change++;
 		if (budget && work_done == budget)
 			work_done--;
 	}
@@ -112,7 +127,10 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 		return budget;
 #endif
 
-#ifndef HAVE_NAPI_STATE_MISSED 
+#ifdef HAVE_NAPI_STATE_MISSED 
+	if (unlikely(!napi_complete_done(napi, work_done)))
+		return work_done;
+#else
  	napi_complete_done(napi, work_done);
  
  	/* avoid losing completion event during/after polling cqs */
@@ -120,19 +138,27 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 		napi_schedule(napi);
 		return work_done;
 	}
-#else
-	if (unlikely(!napi_complete_done(napi, work_done)))
-		return work_done;
 #endif
+
+	ch_stats->arm++;
+
 	for (i = 0; i < c->num_tc; i++) {
 		mlx5e_handle_tx_dim(&c->sq[i]);
 		mlx5e_cq_arm(&c->sq[i].cq);
 	}
 
+#ifdef CONFIG_MLX5_EN_SPECIAL_SQ
+	for (i = 0; i < c->num_special_sq; i++)
+		mlx5e_cq_arm(&c->special_sq[i].cq);
+#endif
+
 	mlx5e_handle_rx_dim(&c->rq);
 
 	mlx5e_cq_arm(&c->rq.cq);
 	mlx5e_cq_arm(&c->icosq.cq);
+#ifdef HAVE_XDP_REDIRECT
+	mlx5e_cq_arm(&c->xdpsq.cq);
+#endif
 
 	return work_done;
 }
@@ -141,11 +167,12 @@ void mlx5e_completion_event(struct mlx5_core_cq *mcq)
 {
 	struct mlx5e_cq *cq = container_of(mcq, struct mlx5e_cq, mcq);
 
-	cq->event_ctr++;
 #ifndef HAVE_NAPI_STATE_MISSED
 	set_bit(MLX5E_CHANNEL_NAPI_SCHED, &cq->channel->flags);
 #endif
 	napi_schedule(cq->napi);
+	cq->event_ctr++;
+	cq->channel->stats->events++;
 }
 
 void mlx5e_cq_error_event(struct mlx5_core_cq *mcq, enum mlx5_event event)

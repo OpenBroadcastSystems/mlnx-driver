@@ -43,25 +43,70 @@ struct mlx5e_tls_sw_stats {
 	atomic64_t tx_tls_drop_resync_alloc;
 	atomic64_t tx_tls_drop_no_sync_data;
 	atomic64_t tx_tls_drop_bypass_required;
+	atomic64_t rx_tls_drop_resync_request;
+	atomic64_t rx_tls_resync_request;
+	atomic64_t rx_tls_resync_reply;
+	atomic64_t rx_tls_auth_fail;
 };
 
 struct mlx5e_tls {
 	struct mlx5e_tls_sw_stats sw_stats;
 };
 
-struct mlx5e_tls_offload_context {
+struct mlx5e_tls_offload_context_tx {
+#ifdef HAVE_TLS_OFFLOAD_CONTEXT_TX_STRUCT
+	struct tls_offload_context_tx base;
+#else
 	struct tls_offload_context base;
+#endif
 	u32 expected_seq;
 	__be32 swid;
 };
 
-static inline struct mlx5e_tls_offload_context *
+static inline struct mlx5e_tls_offload_context_tx *
 mlx5e_get_tls_tx_context(struct tls_context *tls_ctx)
 {
-	BUILD_BUG_ON(sizeof(struct mlx5e_tls_offload_context) >
+	BUILD_BUG_ON(sizeof(struct mlx5e_tls_offload_context_tx) >
+#ifdef HAVE_TLS_OFFLOAD_CONTEXT_TX_STRUCT
+		     TLS_OFFLOAD_CONTEXT_SIZE_TX);
+#else
 		     TLS_OFFLOAD_CONTEXT_SIZE);
-	return container_of(tls_offload_ctx(tls_ctx),
-			    struct mlx5e_tls_offload_context,
+#endif
+	return container_of(
+#ifdef HAVE_TLS_OFFLOAD_CONTEXT_TX_STRUCT
+			    tls_offload_ctx_tx(tls_ctx),
+#else
+			    tls_offload_ctx(tls_ctx),
+#endif
+			    struct mlx5e_tls_offload_context_tx,
+			    base);
+}
+
+struct mlx5e_tls_offload_context_rx {
+#ifdef HAVE_TLS_OFFLOAD_CONTEXT_RX_STRUCT
+	struct tls_offload_context_rx base;
+#else
+	struct tls_offload_context base;
+#endif
+	__be32 handle;
+};
+
+static inline struct mlx5e_tls_offload_context_rx *
+mlx5e_get_tls_rx_context(struct tls_context *tls_ctx)
+{
+	BUILD_BUG_ON(sizeof(struct mlx5e_tls_offload_context_rx) >
+#ifdef HAVE_TLS_OFFLOAD_CONTEXT_RX_STRUCT
+		     TLS_OFFLOAD_CONTEXT_SIZE_RX);
+#else
+		     TLS_OFFLOAD_CONTEXT_SIZE);
+#endif
+	return container_of(
+#ifdef HAVE_TLS_OFFLOAD_CONTEXT_RX_STRUCT
+			    tls_offload_ctx_rx(tls_ctx),
+#else
+			    tls_offload_ctx(tls_ctx),
+#endif
+			    struct mlx5e_tls_offload_context_rx,
 			    base);
 }
 

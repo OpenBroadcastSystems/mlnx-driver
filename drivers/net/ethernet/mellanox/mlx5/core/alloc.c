@@ -71,7 +71,11 @@ static void *mlx5_dma_zalloc_coherent_node(struct mlx5_core_dev *dev,
 	mutex_lock(&priv->alloc_mutex);
 	original_node = dev_to_node(&dev->pdev->dev);
 	set_dev_node(&dev->pdev->dev, node);
+#ifdef HAVE_DMA_ZALLOC_COHERENT
 	cpu_handle = dma_zalloc_coherent(&dev->pdev->dev, size,
+#else
+	cpu_handle = dma_alloc_coherent(&dev->pdev->dev, size,
+#endif
 					 dma_handle, GFP_KERNEL);
 	set_dev_node(&dev->pdev->dev, original_node);
 	mutex_unlock(&priv->alloc_mutex);

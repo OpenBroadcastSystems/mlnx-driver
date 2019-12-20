@@ -588,7 +588,12 @@ static int mlx4_buf_direct_alloc(struct mlx4_dev *dev, int size,
 	buf->npages       = 1;
 	buf->page_shift   = get_order(size) + PAGE_SHIFT;
 	buf->direct.buf   =
+#ifdef HAVE_DMA_ZALLOC_COHERENT
 		dma_zalloc_coherent(&dev->persist->pdev->dev,
+#else
+
+		dma_alloc_coherent(&dev->persist->pdev->dev,
+#endif
 #ifdef HAVE_MEMALLOC_NOIO_SAVE
 				    size, &t, GFP_KERNEL);
 #else
@@ -630,7 +635,7 @@ int mlx4_buf_alloc(struct mlx4_dev *dev, int size, int max_direct,
 		int i;
 
 		buf->direct.buf = NULL;
-		buf->nbufs	= (size + PAGE_SIZE - 1) / PAGE_SIZE;
+		buf->nbufs      = DIV_ROUND_UP(size, PAGE_SIZE);
 		buf->npages	= buf->nbufs;
 		buf->page_shift  = PAGE_SHIFT;
 		buf->page_list  = kzalloc_node(buf->nbufs * sizeof(*buf->page_list),
@@ -648,7 +653,11 @@ int mlx4_buf_alloc(struct mlx4_dev *dev, int size, int max_direct,
 
 		for (i = 0; i < buf->nbufs; ++i) {
 			buf->page_list[i].buf =
+#ifdef HAVE_DMA_ZALLOC_COHERENT
 				dma_zalloc_coherent(&dev->persist->pdev->dev,
+#else
+				dma_alloc_coherent(&dev->persist->pdev->dev,
+#endif
 #ifdef HAVE_MEMALLOC_NOIO_SAVE
 						    PAGE_SIZE, &t, GFP_KERNEL);
 #else

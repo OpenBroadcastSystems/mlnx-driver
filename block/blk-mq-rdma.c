@@ -1,4 +1,4 @@
-#ifdef HAVE_BLK_MQ_MAP_QUEUES
+#if defined(HAVE_BLK_MQ_MAP_QUEUES)  && defined(HAVE_BLK_MQ_TAG_SET_HAS_MQ_MAP)
 
 /*
  * Copyright (c) 2017 Sagi Grimberg.

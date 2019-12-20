@@ -244,8 +244,12 @@ static void mlx4_set_eq_affinity_hint(struct mlx4_priv *priv, int vec)
 	int hint_err;
 	struct mlx4_dev *dev = &priv->dev;
 	struct mlx4_eq *eq = &priv->eq_table.eq[vec];
-
+#ifdef HAVE_CPUMASK_AVAILABLE 
+	if (!cpumask_available(eq->affinity_mask) ||
+	    cpumask_empty(eq->affinity_mask))
+#else
 	if (!eq->affinity_mask || cpumask_empty(eq->affinity_mask))
+#endif
 		return;
 
 	hint_err = irq_set_affinity_hint(eq->irq, eq->affinity_mask);

@@ -1739,20 +1739,6 @@ out:
 	mutex_unlock(&mdev->state_lock);
 }
 
-#ifdef CONFIG_NET_POLL_CONTROLLER
-static void mlx4_en_netpoll(struct net_device *dev)
-{
-	struct mlx4_en_priv *priv = netdev_priv(dev);
-	struct mlx4_en_cq *cq;
-	int i;
-
-	for (i = 0; i < priv->tx_ring_num[TX]; i++) {
-		cq = priv->tx_cq[TX][i];
-		napi_schedule(&cq->napi);
-	}
-}
-#endif
-
 static int mlx4_en_set_rss_steer_rules(struct mlx4_en_priv *priv)
 {
 	u64 reg_id;
@@ -2983,7 +2969,7 @@ static ssize_t mlx4_en_set_fdb(struct device *dev,
 	return err ? err : count;
 }
 
-static DEVICE_ATTR(fdb, S_IRUGO | 002, mlx4_en_show_fdb, mlx4_en_set_fdb);
+static DEVICE_ATTR(fdb, S_IRUGO | S_IWUSR, mlx4_en_show_fdb, mlx4_en_set_fdb);
 #endif
 
 static void mlx4_en_clear_stats(struct net_device *dev)
@@ -4164,9 +4150,6 @@ static struct net_device_ops mlx4_netdev_base_ops = {
 #endif
 	.ndo_vlan_rx_add_vid	= mlx4_en_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= mlx4_en_vlan_rx_kill_vid,
-#ifdef CONFIG_NET_POLL_CONTROLLER
-	.ndo_poll_controller	= mlx4_en_netpoll,
-#endif
 #if (defined(HAVE_NDO_SET_FEATURES) && !defined(HAVE_NET_DEVICE_OPS_EXT))
 	.ndo_set_features	= mlx4_en_set_features,
 #endif

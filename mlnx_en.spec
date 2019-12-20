@@ -34,6 +34,7 @@
 %global POWERKVM %(if (grep -qiE "powerkvm" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global BLUENIX %(if (grep -qiE "Bluenix" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global XENSERVER65 %(if (grep -qiE "XenServer.*6\.5" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
+%global RHEL8 %(if test `grep -E '^(ID="rhel"|VERSION="8)' /etc/os-release 2>/dev/null | wc -l` -eq 2; then echo -n '1'; else echo -n '0'; fi)
 
 %{!?MEMTRACK: %global MEMTRACK 0}
 %{!?MLX4: %global MLX4 1}
@@ -72,17 +73,24 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 4.5}
-%{!?_release: %global _release 1.0.1.0.gb4fdfac}
+%{!?_version: %global _version 4.6}
+%{!?_release: %global _release 1.0.1.0.ga2cfe08}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
+%if %{RHEL8}
+%global mlnx_python_env    export MLNX_PYTHON_EXECUTABLE=python3
+%global mlnx_python        python3
+%else
+%global mlnx_python_env    :
+%global mlnx_python        python
+%endif
+
 Name: %{_name}
-Group: System Environment
+Group: System Environment/Kernel
 Version: %{_version}
 Release: %{_release}%{?_dist}
 License: GPLv2
 Url: http://www.mellanox.com
-Group: System Environment/Kernel
 Vendor: Mellanox Technologies
 Source0: %{_name}-%{_version}.tgz
 Source1: mlx4.files
@@ -94,7 +102,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -102,7 +110,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -110,7 +118,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -118,14 +126,14 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
@@ -152,7 +160,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.5-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -219,11 +227,15 @@ The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mln
 set -- *
 mkdir source
 mv "$@" source/
+%if %{RHEL8}
+sed -s -i -e '1s|python\>|python3|' `grep -rl '^#!.*python' source/ofed_scripts`
+%endif
 mkdir obj
 
 %build
 rm -rf %{buildroot}
 export EXTRA_CFLAGS='-DVERSION=\"%version\"'
+%{mlnx_python_env}
 for flavor in %{flavors_to_build}; do
 	rm -rf obj/$flavor
 	cp -r source obj/$flavor
@@ -251,12 +263,13 @@ done
 gzip -c source/scripts/mlx4_en.7 > mlx4_en.7.gz
 
 cd source/ofed_scripts/utils
-python setup.py build
+%{mlnx_python} setup.py build
 cd -
 
 %install
 export INSTALL_MOD_PATH=%{buildroot}
 export INSTALL_MOD_DIR=%{install_mod_dir}
+%{mlnx_python_env}
 for flavor in %{flavors_to_build}; do
 	cd $PWD/obj/$flavor
 	export KSRC=%{kernel_source $flavor}
@@ -294,16 +307,18 @@ install -D -m 755 source/ofed_scripts/show_irq_affinity_hints.sh %{buildroot}/%{
 install -D -m 755 source/ofed_scripts/set_irq_affinity_bynode.sh %{buildroot}/%{_sbindir}/set_irq_affinity_bynode.sh
 install -D -m 755 source/ofed_scripts/set_irq_affinity_cpulist.sh %{buildroot}/%{_sbindir}/set_irq_affinity_cpulist.sh
 install -D -m 755 source/ofed_scripts/sysctl_perf_tuning %{buildroot}/sbin/sysctl_perf_tuning
+install -D -m 755 source/ofed_scripts/mlnx_eswitch_set %{buildroot}/sbin/mlnx_eswitch_set
 install -D -m 755 source/ofed_scripts/mlnx_tune %{buildroot}/usr/sbin/mlnx_tune
 install -D -m 644 source/scripts/mlnx-en.conf %{buildroot}/etc/mlnx-en.conf
 install -D -m 755 source/scripts/mlnx-en.d %{buildroot}/etc/init.d/mlnx-en.d
+install -D -m 644 source/ofed_scripts/mlnx-eswitch.conf   %{buildroot}/etc/modprobe.d/mlnx-eswitch.conf
 
 mkdir -p %{buildroot}/%{_prefix}/src
 cp -r source %{buildroot}/%{_prefix}/src/%{name}-%{version}
 
 touch ofed-files
 cd source/ofed_scripts/utils
-python setup.py install -O1 --root=%{buildroot} --record ../../../ofed-files
+%{mlnx_python} setup.py install -O1 --root=%{buildroot} --record ../../../ofed-files
 cd -
 
 if [[ "$(ls %{buildroot}/%{_bindir}/tc_wrap.py* 2>/dev/null)" != "" ]]; then
@@ -497,6 +512,7 @@ rm -rf %{buildroot}
 
 %files utils -f ofed-files
 %defattr(-,root,root,-)
+%config(noreplace) /etc/modprobe.d/mlnx-eswitch.conf
 %{_sbindir}/*
 /sbin/*
 %config(noreplace) /etc/mlnx-en.conf

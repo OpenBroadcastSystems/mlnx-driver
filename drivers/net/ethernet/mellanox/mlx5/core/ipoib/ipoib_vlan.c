@@ -147,11 +147,14 @@ static const struct net_device_ops mlx5i_pkey_netdev_ops = {
 	.ndo_open                = mlx5i_pkey_open,
 	.ndo_stop                = mlx5i_pkey_close,
 	.ndo_init                = mlx5i_pkey_dev_init,
+#if defined(HAVE_NDO_GET_STATS64) || defined(HAVE_NDO_GET_STATS64_RET_VOID)
+	.ndo_get_stats64         = mlx5i_get_stats,
+#endif
 	.ndo_uninit              = mlx5i_pkey_dev_cleanup,
-#ifdef HAVE_NDO_CHANGE_MTU_RH74
-	.ndo_change_mtu_rh74     = mlx5i_pkey_change_mtu,
-#else
+#ifndef HAVE_NDO_CHANGE_MTU_RH74
 	.ndo_change_mtu          = mlx5i_pkey_change_mtu,
+#else
+	.ndo_change_mtu_rh74     = mlx5i_pkey_change_mtu,
 #endif
 	.ndo_do_ioctl            = mlx5i_pkey_ioctl,
 	.ndo_tx_timeout          = mlx5i_tx_timeout,
@@ -174,7 +177,7 @@ static int mlx5i_pkey_dev_init(struct net_device *dev)
 #ifdef HAVE_NDO_GET_IFLINK
 	parent_ifindex = dev->netdev_ops->ndo_get_iflink(dev);
 #else
-	parent_ifindex = dev->iflink;
+	parent_ifindex = dev->ifindex;
 #endif
 	parent_dev = dev_get_by_index(dev_net(dev), parent_ifindex);
 	if (!parent_dev) {
@@ -287,14 +290,17 @@ static int mlx5i_pkey_change_mtu(struct net_device *netdev, int new_mtu)
 }
 
 /* Called directly after IPoIB netdevice was created to initialize SW structs */
-static void mlx5i_pkey_init(struct mlx5_core_dev *mdev,
-			     struct net_device *netdev,
-			     const struct mlx5e_profile *profile,
-			     void *ppriv)
+static int mlx5i_pkey_init(struct mlx5_core_dev *mdev,
+			   struct net_device *netdev,
+			   const struct mlx5e_profile *profile,
+			   void *ppriv)
 {
 	struct mlx5e_priv *priv  = mlx5i_epriv(netdev);
+	int err;
 
-	mlx5i_init(mdev, netdev, profile, ppriv);
+	err = mlx5i_init(mdev, netdev, profile, ppriv);
+	if (err)
+		return err;
 
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
        netdev->features &= ~NETIF_F_LRO;
@@ -308,21 +314,23 @@ static void mlx5i_pkey_init(struct mlx5_core_dev *mdev,
 	netdev->netdev_ops = &mlx5i_pkey_netdev_ops;
 
 	/* Set child limited ethtool support */
-#ifdef HAVE_ETHTOOL_OPS_EXT
+#ifndef HAVE_ETHTOOL_OPS_EXT
+	netdev->ethtool_ops = &mlx5i_pkey_ethtool_ops;
+#else
 	SET_ETHTOOL_OPS(netdev, &mlx5i_pkey_ethtool_ops);
 	set_ethtool_ops_ext(netdev, &mlx5i_pkey_ethtool_ops_ext);
-#else
-	netdev->ethtool_ops = &mlx5i_pkey_ethtool_ops;
 #endif
 
 	/* Use dummy rqs */
 	priv->channels.params.log_rq_mtu_frames = MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE;
+
+	return 0;
 }
 
 /* Called directly before IPoIB netdevice is destroyed to cleanup SW structs */
 static void mlx5i_pkey_cleanup(struct mlx5e_priv *priv)
 {
-	/* Do nothing .. */
+	mlx5i_cleanup(priv);
 }
 
 static int mlx5i_pkey_init_tx(struct mlx5e_priv *priv)
@@ -371,7 +379,6 @@ static const struct mlx5e_profile mlx5i_pkey_nic_profile = {
 	.enable		   = NULL,
 	.disable	   = NULL,
 	.update_stats	   = NULL,
-	.max_nch	   = mlx5e_get_max_num_channels,
 	.rx_handlers.handle_rx_cqe       = mlx5i_handle_rx_cqe,
 	.rx_handlers.handle_rx_cqe_mpwqe = NULL, /* Not supported */
 	.max_tc		   = MLX5I_MAX_NUM_TC,

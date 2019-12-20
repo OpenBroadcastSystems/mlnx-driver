@@ -31,6 +31,7 @@
  */
 
 #include "en.h"
+#include "en/port.h"
 
 /* mlx5e global resources should be placed in this file.
  * Global resources are common to all the netdevices crated on the same nic.
@@ -48,7 +49,9 @@ int mlx5e_create_tir(struct mlx5_core_dev *mdev,
 		return err;
 
 	tir->tirn = MLX5_GET(create_tir_out, out, tirn);
+	mutex_lock(&mdev->mlx5e_res.td.list_lock);
 	list_add(&tir->list, &mdev->mlx5e_res.td.tirs_list);
+	mutex_unlock(&mdev->mlx5e_res.td.list_lock);
 
 	return 0;
 }
@@ -56,8 +59,10 @@ int mlx5e_create_tir(struct mlx5_core_dev *mdev,
 void mlx5e_destroy_tir(struct mlx5_core_dev *mdev,
 		       struct mlx5e_tir *tir)
 {
+	mutex_lock(&mdev->mlx5e_res.td.list_lock);
 	mlx5_core_destroy_tir(mdev, tir->tirn);
 	list_del(&tir->list);
+	mutex_unlock(&mdev->mlx5e_res.td.list_lock);
 }
 
 static int mlx5e_create_mkey(struct mlx5_core_dev *mdev, u32 pdn,
@@ -117,6 +122,7 @@ int mlx5e_create_mdev_resources(struct mlx5_core_dev *mdev)
 	}
 
 	INIT_LIST_HEAD(&mdev->mlx5e_res.td.tirs_list);
+	mutex_init(&mdev->mlx5e_res.td.list_lock);
 
 	return 0;
 
@@ -160,6 +166,7 @@ int mlx5e_refresh_tirs(struct mlx5e_priv *priv, bool enable_uc_lb)
 
 	MLX5_SET(modify_tir_in, in, bitmask.self_lb_en, 1);
 
+	mutex_lock(&mdev->mlx5e_res.td.list_lock);
 	list_for_each_entry(tir, &mdev->mlx5e_res.td.tirs_list, list) {
 		tirn = tir->tirn;
 		err = mlx5_core_modify_tir(mdev, tirn, in, inlen);
@@ -171,6 +178,7 @@ out:
 	kvfree(in);
 	if (err)
 		netdev_err(priv->netdev, "refresh tir(0x%x) failed, %d\n", tirn, err);
+	mutex_unlock(&mdev->mlx5e_res.td.list_lock);
 
 	return err;
 }
@@ -218,6 +226,20 @@ static const u32 mlx5e_link_speed[MLX5E_LINK_MODES_NUMBER] = {
 	[MLX5E_50GBASE_KR2]       = 50000,
 };
 
+static const u32 mlx5e_ext_link_speed[MLX5E_EXT_LINK_MODES_NUMBER] = {
+	[MLX5E_SGMII_100M]			= 100,
+	[MLX5E_1000BASE_X_SGMII]		= 1000,
+	[MLX5E_5GBASE_R]			= 5000,
+	[MLX5E_10GBASE_XFI_XAUI_1]		= 10000,
+	[MLX5E_40GBASE_XLAUI_4_XLPPI_4]		= 40000,
+	[MLX5E_25GAUI_1_25GBASE_CR_KR]		= 25000,
+	[MLX5E_50GAUI_2_LAUI_2_50GBASE_CR2_KR2]	= 50000,
+	[MLX5E_50GAUI_1_LAUI_1_50GBASE_CR_KR]	= 50000,
+	[MLX5E_CAUI_4_100GBASE_CR4_KR4]		= 100000,
+	[MLX5E_100GAUI_2_100GBASE_CR2_KR2]	= 100000,
+	[MLX5E_200GAUI_4_200GBASE_CR4_KR4]	= 200000,
+};
+
 u32 mlx5e_ptys_to_speed(u32 eth_proto_oper)
 {
 	unsigned long temp = (unsigned long)eth_proto_oper;
@@ -256,19 +278,25 @@ int mlx5e_get_port_speed(struct mlx5e_priv *priv, u32 *speed)
 #ifdef HAVE_GET_SET_LINK_KSETTINGS
 int mlx5e_get_max_linkspeed(struct mlx5_core_dev *mdev, u32 *speed)
 {
+	struct mlx5e_port_eth_proto eproto;
+	const u32 *arr;
 	u32 max_speed = 0;
-	u32 proto_cap;
+	u32 max_size;
+	bool ext;
 	int err;
 	int i;
 
-	err = mlx5_query_port_proto_cap(mdev, &proto_cap, MLX5_PTYS_EN);
+	ext = MLX5_CAP_PCAM_FEATURE(mdev, ptys_extended_ethernet);
+	max_size = ext? MLX5E_EXT_LINK_MODES_NUMBER : MLX5E_LINK_MODES_NUMBER;
+	arr = ext ? mlx5e_ext_link_speed : mlx5e_link_speed;
+	err = mlx5_port_query_eth_proto(mdev, 1, ext, &eproto);
 	if (err)
 		return err;
 
-	for (i = 0; i < MLX5E_LINK_MODES_NUMBER; ++i)
-		if (proto_cap & MLX5E_PROT_MASK(i))
-			max_speed = max(max_speed, mlx5e_link_speed[i]);
-
+	for (i = 0; i < max_size; ++i)
+		if (eproto.cap & MLX5E_PROT_MASK(i))
+			max_speed = max(max_speed, arr[i]);
+ 
 	*speed = max_speed;
 	return 0;
 }

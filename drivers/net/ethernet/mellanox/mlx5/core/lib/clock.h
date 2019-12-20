@@ -33,21 +33,55 @@
 #ifndef __LIB_CLOCK_H__
 #define __LIB_CLOCK_H__
 
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
 void mlx5_init_clock(struct mlx5_core_dev *mdev);
 void mlx5_cleanup_clock(struct mlx5_core_dev *mdev);
+void mlx5_pps_event(struct mlx5_core_dev *dev, struct mlx5_eqe *eqe);
+
+static inline int mlx5_clock_get_ptp_index(struct mlx5_core_dev *mdev)
+{
+	return mdev->clock.ptp ? ptp_clock_index(mdev->clock.ptp) : -1;
+}
 
 static inline ktime_t mlx5_timecounter_cyc2time(struct mlx5_clock *clock,
 						u64 timestamp)
 {
+	unsigned int seq;
 	u64 nsec;
+
 #if defined (HAVE_PTP_CLOCK_INFO) && (defined (CONFIG_PTP_1588_CLOCK) || defined(CONFIG_PTP_1588_CLOCK_MODULE))
-	read_lock(&clock->lock);
-	nsec = timecounter_cyc2time(&clock->tc, timestamp);
-	read_unlock(&clock->lock);
+	do {
+		seq = read_seqbegin(&clock->lock);
+		nsec = timecounter_cyc2time(&clock->tc, timestamp);
+	} while (read_seqretry(&clock->lock, seq));
+
 #else
 	nsec = 0 ;
 #endif
 	return ns_to_ktime(nsec);
 }
+
+#else
+static inline void mlx5_init_clock(struct mlx5_core_dev *mdev) {}
+static inline void mlx5_cleanup_clock(struct mlx5_core_dev *mdev) {}
+static inline void mlx5_pps_event(struct mlx5_core_dev *dev, struct mlx5_eqe *eqe) {}
+
+static inline int mlx5_clock_get_ptp_index(struct mlx5_core_dev *mdev)
+{
+	return -1;
+}
+
+static inline ktime_t mlx5_timecounter_cyc2time(struct mlx5_clock *clock,
+						u64 timestamp)
+{
+#ifdef HAVE_KTIME_UNION_TV64
+	ktime_t x;
+	x.tv64 = 0;
+	return x;
+#else
+	return 0;
+#endif
+}
+#endif
 
 #endif

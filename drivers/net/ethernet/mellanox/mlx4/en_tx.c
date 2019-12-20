@@ -31,6 +31,9 @@
  *
  */
 
+#ifdef HAVE_XDP_BUFF
+#include <linux/bpf.h>
+#endif
 #include <asm/page.h>
 #include <linux/mlx4/cq.h>
 #include <linux/slab.h>
@@ -43,10 +46,6 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/moduleparam.h>
-#ifdef HAVE_NETDEV_BPF
-#include <linux/bpf.h>
-#endif
-
 #include "mlx4_en.h"
 
 int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv,
@@ -1106,7 +1105,9 @@ static inline netdev_tx_t __mlx4_en_xmit(struct sk_buff *skb,
 		ring->packets++;
 	}
 	ring->bytes += tx_info->nr_bytes;
+#ifndef HAVE_NETDEV_TX_SEND_QUEUE
 	netdev_tx_sent_queue(ring->tx_queue, tx_info->nr_bytes);
+#endif
 	AVG_PERF_COUNTER(priv->pstats.tx_pktsz_avg, skb->len);
 
 	if (tx_info->inl)
@@ -1146,8 +1147,15 @@ static inline netdev_tx_t __mlx4_en_xmit(struct sk_buff *skb,
 		netif_tx_stop_queue(ring->tx_queue);
 		ring->queue_stopped++;
 	}
+
 #ifdef HAVE_SK_BUFF_XMIT_MORE
+#ifdef HAVE_NETDEV_TX_SEND_QUEUE
+	send_doorbell = __netdev_tx_sent_queue(ring->tx_queue,
+					       tx_info->nr_bytes,
+					       skb->xmit_more);
+#else
 	send_doorbell = !skb->xmit_more || netif_xmit_stopped(ring->tx_queue);
+#endif
 #else
 	send_doorbell = true;
 #endif

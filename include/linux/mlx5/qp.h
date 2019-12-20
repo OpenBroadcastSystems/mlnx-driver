@@ -33,6 +33,8 @@
 #ifndef MLX5_QP_H
 #define MLX5_QP_H
 
+#include "../../../compat/config.h"
+
 #include <linux/mlx5/device.h>
 #include <linux/mlx5/driver.h>
 
@@ -513,9 +515,9 @@ struct mlx5_core_qp {
 	int			qpn;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
+	u16			uid;
 	struct mlx5_pagefault *pfault_req;
 	struct mlx5_pagefault *pfault_res;
-	u16			uid;
 };
 
 struct mlx5_core_dct {
@@ -601,7 +603,8 @@ static inline struct mlx5_core_mkey *__mlx5_mr_lookup(struct mlx5_core_dev *dev,
 
 int mlx5_core_create_dct(struct mlx5_core_dev *dev,
 			 struct mlx5_core_dct *qp,
-			 u32 *in, int inlen);
+			 u32 *in, int inlen,
+			 u32 *out, int outlen);
 int mlx5_core_create_qp(struct mlx5_core_dev *dev,
 			struct mlx5_core_qp *qp,
 			u32 *in,
