@@ -55,7 +55,6 @@ def_configure_options=" \
 	--with-mlx5-mod \
 	--with-mlxfw-mod \
 	--with-ipoib-mod \
-	--with-e_ipoib-mod \
 	"
 # check if dkms.conf exists and parse it, otherwise use the env variable or the default
 if [ -f $WDIR/../dkms.conf ];then
@@ -117,9 +116,6 @@ module_to_flag()
 		ib_ipoib)
 		flag=--with-ipoib-mod
 		;;
-		eth_ipoib)
-		flag=--with-e_ipoib-mod
-		;;
 		memtrack)
 		flag=--with-memtrack
 		;;
@@ -131,6 +127,9 @@ module_to_flag()
 		;;
 		mlx5_fpga_tools)
 		flag=--with-innova-flex
+		;;
+		mdev)
+		flag=--with-mdev-mod
 		;;
 		*)
 		;;
@@ -198,10 +197,6 @@ get-modules()
 			modules="$modules \
 				drivers/infiniband/ulp/ipoib/ib_ipoib"
 			;;
-			--with-e_ipoib-mod )
-			modules="$modules \
-				drivers/net/eipoib/eth_ipoib"
-			;;
 			--with-memtrack )
 			modules="$modules \
 				drivers/infiniband/debug/memtrack"
@@ -213,6 +208,10 @@ get-modules()
 			--with-innova-flex | --with-innova-ipsec )
 			modules="$modules \
 				drivers/net/ethernet/mellanox/mlx5/fpga/mlx5_fpga_tools"
+			;;
+			--with-mdev-mod )
+			modules="$modules \
+				drivers/vfio/mdev/mdev"
 			;;
 			*)
 			;;

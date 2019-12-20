@@ -348,11 +348,8 @@ int mlx4_en_create_rx_ring(struct mlx4_en_priv *priv,
 
 	ring = kzalloc_node(sizeof(*ring), GFP_KERNEL, node);
 	if (!ring) {
-		ring = kzalloc(sizeof(*ring), GFP_KERNEL);
-		if (!ring) {
-			en_err(priv, "Failed to allocate RX ring structure\n");
-			return -ENOMEM;
-		}
+		en_err(priv, "Failed to allocate RX ring structure\n");
+		return -ENOMEM;
 	}
 
 	ring->node = node;
@@ -1214,7 +1211,11 @@ csum_none:
 			skb->data_len = length;
 			napi_gro_frags(&cq->napi);
 		} else {
+#ifdef HAVE__VLAN_HWACCEL_CLEAR_TAG
+			__vlan_hwaccel_clear_tag(skb);
+#else
 			skb->vlan_tci = 0;
+#endif
 			skb_clear_hash(skb);
 		}
 next:

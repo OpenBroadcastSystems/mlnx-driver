@@ -151,6 +151,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/ratelimit.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/vmalloc.h>
@@ -599,6 +600,9 @@ void memtrack_alloc(enum memtrack_memtype_t memtype, unsigned long dev,
 	struct tracked_obj_desc_t *obj_desc_p;
 	unsigned long flags;
 
+	if (memtype == MEMTRACK_KVMALLOC)
+		memtype = is_vmalloc_addr((const void *)addr) ? MEMTRACK_VMALLOC : MEMTRACK_KMALLOC;
+
 	if (memtype >= MEMTRACK_NUM_OF_MEMTYPES) {
 		printk(KERN_ERR "%s: Invalid memory type (%d)\n", __func__, memtype);
 		return;
@@ -771,6 +775,8 @@ int is_non_trackable_alloc_func(const char *func_name)
 		"mlx4_en_complete_rx_desc",
 		"mlx4_alloc_pages",
 		"mlx4_alloc_page",
+		"mlx4_crdump_collect_crspace",
+		"mlx4_crdump_collect_fw_health",
 		"mlx5e_page_alloc_mapped",
 		"mlx5e_put_page",
 		/* vnic skb functions */

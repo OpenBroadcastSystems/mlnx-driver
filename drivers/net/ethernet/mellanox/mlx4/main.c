@@ -60,6 +60,9 @@
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("Mellanox ConnectX HCA low-level driver");
 MODULE_LICENSE("Dual BSD/GPL");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
 MODULE_VERSION(DRV_VERSION);
 
 struct workqueue_struct *mlx4_wq;
@@ -72,7 +75,7 @@ MODULE_PARM_DESC(mlx4_en_only_mode, "Load in Ethernet only mode "
 
 #ifdef CONFIG_MLX4_DEBUG
 
-int mlx4_debug_level = 0;
+int mlx4_debug_level; /* 0 by default */
 module_param_named(debug_level, mlx4_debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "Enable debug tracing if > 0");
 
@@ -442,8 +445,11 @@ static int mlx4_devlink_crdump_snapshot_set(struct devlink *devlink, u32 id,
 #endif
 static int
 mlx4_devlink_max_macs_validate(struct devlink *devlink, u32 id,
-			       union devlink_param_value val,
-			       struct netlink_ext_ack *extack)
+			       union devlink_param_value val
+#ifdef HAVE_NETLINK_EXT_ACK
+			       ,struct netlink_ext_ack *extack
+#endif
+			       )
 {
 	u32 value = val.vu32;
 
@@ -451,7 +457,11 @@ mlx4_devlink_max_macs_validate(struct devlink *devlink, u32 id,
 		return -ERANGE;
 
 	if (!is_power_of_2(value)) {
+#ifdef HAVE_NETLINK_EXT_ACK
 		NL_SET_ERR_MSG_MOD(extack, "max_macs supported must be power of 2");
+#else
+		pr_err("mlx4_core: max_macs supported must be power of 2\n");
+#endif
 		return -EINVAL;
 	}
 
@@ -891,7 +901,7 @@ int mlx4_check_port_params(struct mlx4_dev *dev,
 		for (i = 0; i < dev->caps.num_ports - 1; i++) {
 			if (port_type[i] != port_type[i + 1]) {
 				mlx4_err(dev, "Only same port types supported on this HCA, aborting\n");
-				return -EINVAL;
+				return -EOPNOTSUPP;
 			}
 		}
 	}
@@ -900,7 +910,7 @@ int mlx4_check_port_params(struct mlx4_dev *dev,
 		if (!(port_type[i] & dev->caps.supported_type[i+1])) {
 			mlx4_err(dev, "Requested port type for port %d is not supported on this HCA\n",
 				 i + 1);
-			return -EINVAL;
+			return -EOPNOTSUPP;
 		}
 	}
 	return 0;
@@ -1884,8 +1894,7 @@ static int __set_port_type(struct mlx4_port_info *info,
 		mlx4_err(mdev,
 			 "Requested port type for port %d is not supported on this HCA\n",
 			 info->port);
-		err = -EINVAL;
-		goto err_sup;
+		return -EOPNOTSUPP;
 	}
 
 	mlx4_stop_sense(mdev);
@@ -1907,7 +1916,7 @@ static int __set_port_type(struct mlx4_port_info *info,
 		for (i = 1; i <= mdev->caps.num_ports; i++) {
 			if (mdev->caps.possible_type[i] == MLX4_PORT_TYPE_AUTO) {
 				mdev->caps.possible_type[i] = mdev->caps.port_type[i];
-				err = -EINVAL;
+				err = -EOPNOTSUPP;
 			}
 		}
 	}
@@ -1933,7 +1942,7 @@ static int __set_port_type(struct mlx4_port_info *info,
 out:
 	mlx4_start_sense(mdev);
 	mutex_unlock(&priv->port_mutex);
-err_sup:
+
 	return err;
 }
 
@@ -4089,7 +4098,7 @@ disable_sriov:
 free_mem:
 	dev->persist->num_vfs = 0;
 	kfree(dev->dev_vfs);
-        dev->dev_vfs = NULL;
+	dev->dev_vfs = NULL;
 	return dev_flags & ~MLX4_FLAG_MASTER;
 }
 
@@ -4796,8 +4805,11 @@ static void mlx4_devlink_param_load_driverinit_values(struct devlink *devlink)
 	}
 #endif
 }
-static int mlx4_devlink_reload(struct devlink *devlink,
-			       struct netlink_ext_ack *extack)
+static int mlx4_devlink_reload(struct devlink *devlink
+#ifdef HAVE_DEVLINK_RELAOD_EXTACK
+			       ,struct netlink_ext_ack *extack
+#endif
+				)
 {
 	struct mlx4_priv *priv = devlink_priv(devlink);
 	struct mlx4_dev *dev = &priv->dev;
@@ -4883,9 +4895,13 @@ static int mlx4_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto err_devlink_unregister;
 #endif /* HAVE_DEVLINK_PARAM  */
+#ifdef HAVE_DEVLINK_PARAMS_PUBLISHED
+	devlink_params_publish(devlink);
+#endif /* HAVE_DEVLINK_PARAMS_PUBLISHED  */
 
 	pci_save_state(pdev);
 	return 0;
+
 #else
 	if (ret) {
 		kfree(dev->persist);

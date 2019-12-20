@@ -75,7 +75,6 @@ static void mlx5i_build_nic_params(struct mlx5_core_dev *mdev,
 	mlx5e_set_rq_type(mdev, params);
 	mlx5e_init_rq_type_params(mdev, params);
 
-	params->tunneled_stateless_offload = false;
 	/* RQ size in ipoib by default is 512 */
 	params->log_rq_mtu_frames = is_kdump_kernel() ?
 		MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE :
@@ -83,11 +82,12 @@ static void mlx5i_build_nic_params(struct mlx5_core_dev *mdev,
 
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
 	params->lro_en = true;
-	params->pflags &= ~MLX5E_PFLAG_HWLRO;
+	MLX5E_SET_PFLAG(params, MLX5E_PFLAG_HWLRO, false);
 #else
-	params->lro_en = false;
+       params->lro_en = false;
 #endif
 	params->hard_mtu = MLX5_IB_GRH_BYTES + MLX5_IPOIB_HARD_LEN;
+	params->tunneled_offload_en = false;
 }
 
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
@@ -134,18 +134,23 @@ int mlx5i_init(struct mlx5_core_dev *mdev,
 	       void *ppriv)
 {
 	struct mlx5e_priv *priv  = mlx5i_epriv(netdev);
-	u16 max_mtu;
 	int err;
+	u16 max_mtu;
 
 	err = mlx5e_netdev_init(netdev, priv, mdev, profile, ppriv);
 	if (err)
 		return err;
 
 	INIT_WORK(&priv->tx_timeout_work, mlx5i_tx_timeout_work);
+	mlx5e_set_netdev_mtu_boundaries(priv);
+#ifdef HAVE_NET_DEVICE_MIN_MAX_MTU
+	netdev->mtu = netdev->max_mtu;
+#else
 	mlx5_query_port_max_mtu(mdev, &max_mtu, 1);
 	netdev->mtu = max_mtu;
+#endif
 
-	mlx5e_build_nic_params(mdev, &priv->channels.params,
+	mlx5e_build_nic_params(mdev, &priv->rss_params, &priv->channels.params,
 			       mlx5e_get_netdev_max_channels(priv),
 			       netdev->mtu);
 	mlx5i_build_nic_params(mdev, &priv->channels.params);
@@ -364,7 +369,7 @@ static int mlx5i_init_tx(struct mlx5e_priv *priv)
 		return err;
 	}
 
-	err = mlx5e_create_tis(priv->mdev, 0 /* tc */, ipriv->qp.qpn, &priv->tisn[0]);
+	err = mlx5e_create_tis(priv->mdev, 0 /* tc */, ipriv->qp.qpn, 0, &priv->tisn[0][0]);
 	if (err) {
 		mlx5_core_warn(priv->mdev, "create tis failed, %d\n", err);
 		goto err_destroy_underlay_qp;
@@ -381,7 +386,7 @@ static void mlx5i_cleanup_tx(struct mlx5e_priv *priv)
 {
 	struct mlx5i_priv *ipriv = priv->ppriv;
 
-	mlx5e_destroy_tis(priv->mdev, priv->tisn[0]);
+	mlx5e_destroy_tis(priv->mdev, priv->tisn[0][0]);
 	mlx5i_destroy_underlay_qp(priv->mdev, &ipriv->qp);
 }
 
@@ -517,8 +522,7 @@ static inline int mlx5i_get_max_num_channels(struct mlx5_core_dev *mdev)
 {
 	return is_kdump_kernel() ?
 		MLX5E_MIN_NUM_CHANNELS :
-		min_t(int, mdev->priv.eq_table.num_comp_vectors,
-		      MLX5I_MAX_NUM_CHANNELS);
+		min_t(int, mlx5_comp_vectors_count(mdev), MLX5E_MAX_NUM_CHANNELS);
 }
 
 static const struct mlx5e_profile mlx5i_nic_profile = {
@@ -558,9 +562,11 @@ static int mlx5i_change_mtu(struct net_device *netdev, int new_mtu)
 
 	new_channels.params = *params;
 	new_channels.params.sw_mtu = new_mtu;
-	err = mlx5e_switch_priv_channels(priv, &new_channels, NULL);
-	if (err) 
+
+	err = mlx5e_safe_switch_channels(priv, &new_channels, NULL);
+	if (err)
 		goto out;
+
 	netdev->mtu = new_channels.params.sw_mtu;
 
 out:
@@ -740,8 +746,14 @@ static int mlx5i_xmit(struct net_device *dev, struct sk_buff *skb,
 	struct mlx5e_txqsq *sq   = epriv->txq2sq[skb_get_queue_mapping(skb)];
 	struct mlx5_ib_ah *mah   = to_mah(address);
 	struct mlx5i_priv *ipriv = epriv->ppriv;
-
+#ifdef HAVE_NETDEV_XMIT_MORE
+	return mlx5i_sq_xmit(sq, skb, &mah->av, dqpn, ipriv->qkey, netdev_xmit_more());
+#elif defined(HAVE_SK_BUFF_XMIT_MORE)
+	return mlx5i_sq_xmit(sq, skb, &mah->av, dqpn, ipriv->qkey, skb->xmit_more);
+#else
 	return mlx5i_sq_xmit(sq, skb, &mah->av, dqpn, ipriv->qkey);
+#endif
+
 }
 
 static void mlx5i_set_pkey_index(struct net_device *netdev, int id)

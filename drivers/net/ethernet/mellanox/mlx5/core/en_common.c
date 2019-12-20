@@ -30,8 +30,8 @@
  * SOFTWARE.
  */
 
-#include "en.h"
 #include "en/port.h"
+#include "en.h"
 
 /* mlx5e global resources should be placed in this file.
  * Global resources are common to all the netdevices crated on the same nic.
@@ -40,15 +40,12 @@
 int mlx5e_create_tir(struct mlx5_core_dev *mdev,
 		     struct mlx5e_tir *tir, u32 *in, int inlen)
 {
-	u32 out[MLX5_ST_SZ_DW(create_tir_out)] = {0};
 	int err;
 
-	err = mlx5_core_create_tir(mdev, in, inlen,
-				   out, MLX5_ST_SZ_BYTES(create_tir_out));
+	err = mlx5_core_create_tir(mdev, in, inlen, &tir->tirn);
 	if (err)
 		return err;
 
-	tir->tirn = MLX5_GET(create_tir_out, out, tirn);
 	mutex_lock(&mdev->mlx5e_res.td.list_lock);
 	list_add(&tir->list, &mdev->mlx5e_res.td.tirs_list);
 	mutex_unlock(&mdev->mlx5e_res.td.list_lock);
@@ -150,15 +147,17 @@ int mlx5e_refresh_tirs(struct mlx5e_priv *priv, bool enable_uc_lb)
 {
 	struct mlx5_core_dev *mdev = priv->mdev;
 	struct mlx5e_tir *tir;
-	int err  = -ENOMEM;
+	int err  = 0;
 	u32 tirn = 0;
 	int inlen;
 	void *in;
 
 	inlen = MLX5_ST_SZ_BYTES(modify_tir_in);
 	in = kvzalloc(inlen, GFP_KERNEL);
-	if (!in)
+	if (!in) {
+		err = -ENOMEM;
 		goto out;
+	}
 
 	if (enable_uc_lb)
 		MLX5_SET(modify_tir_in, in, ctx.self_lb_block,
@@ -275,30 +274,4 @@ int mlx5e_get_port_speed(struct mlx5e_priv *priv, u32 *speed)
 	return err;
 }
 
-#ifdef HAVE_GET_SET_LINK_KSETTINGS
-int mlx5e_get_max_linkspeed(struct mlx5_core_dev *mdev, u32 *speed)
-{
-	struct mlx5e_port_eth_proto eproto;
-	const u32 *arr;
-	u32 max_speed = 0;
-	u32 max_size;
-	bool ext;
-	int err;
-	int i;
-
-	ext = MLX5_CAP_PCAM_FEATURE(mdev, ptys_extended_ethernet);
-	max_size = ext? MLX5E_EXT_LINK_MODES_NUMBER : MLX5E_LINK_MODES_NUMBER;
-	arr = ext ? mlx5e_ext_link_speed : mlx5e_link_speed;
-	err = mlx5_port_query_eth_proto(mdev, 1, ext, &eproto);
-	if (err)
-		return err;
-
-	for (i = 0; i < max_size; ++i)
-		if (eproto.cap & MLX5E_PROT_MASK(i))
-			max_speed = max(max_speed, arr[i]);
- 
-	*speed = max_speed;
-	return 0;
-}
-#endif
 

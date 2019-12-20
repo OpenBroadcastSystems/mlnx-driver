@@ -169,17 +169,32 @@ static int mlx5i_pkey_dev_init(struct net_device *dev)
 	struct mlx5e_priv *priv = mlx5i_epriv(dev);
 	struct mlx5i_priv *ipriv, *parent_ipriv;
 	struct net_device *parent_dev;
+#ifdef HAVE_NDO_GET_IFLINK
 	int parent_ifindex;
+#else
+	char parent_name[IFNAMSIZ];
+	int i = 0;
+#endif
 
 	ipriv = priv->ppriv;
 
 	/* Get QPN to netdevice hash table from parent */
 #ifdef HAVE_NDO_GET_IFLINK
 	parent_ifindex = dev->netdev_ops->ndo_get_iflink(dev);
-#else
-	parent_ifindex = dev->ifindex;
-#endif
 	parent_dev = dev_get_by_index(dev_net(dev), parent_ifindex);
+#else
+	strcpy(parent_name, dev->name);
+	while (i < strlen(dev->name)) {
+		if (parent_name[i] == '.') {
+			parent_name[i] = 0;
+			break;
+		}
+		i++;
+	}
+	if (i == strlen(dev->name))
+		return -EINVAL;
+	parent_dev = dev_get_by_name(dev_net(dev), parent_name);
+#endif
 	if (!parent_dev) {
 		mlx5_core_warn(priv->mdev, "failed to get parent device\n");
 		return -EINVAL;
@@ -225,7 +240,7 @@ static int mlx5i_pkey_open(struct net_device *netdev)
 		goto err_unint_underlay_qp;
 	}
 
-	err = mlx5e_create_tis(mdev, 0 /* tc */, ipriv->qp.qpn, &epriv->tisn[0]);
+	err = mlx5e_create_tis(mdev, 0 /* tc */, ipriv->qp.qpn, 0, &epriv->tisn[0][0]);
 	if (err) {
 		mlx5_core_warn(mdev, "create child tis failed, %d\n", err);
 		goto err_remove_rx_uderlay_qp;
@@ -243,7 +258,7 @@ static int mlx5i_pkey_open(struct net_device *netdev)
 	return 0;
 
 err_clear_state_opened_flag:
-	mlx5e_destroy_tis(mdev, epriv->tisn[0]);
+	mlx5e_destroy_tis(mdev, epriv->tisn[0][0]);
 err_remove_rx_uderlay_qp:
 	mlx5_fs_remove_rx_underlay_qpn(mdev, ipriv->qp.qpn);
 err_unint_underlay_qp:
@@ -272,7 +287,7 @@ static int mlx5i_pkey_close(struct net_device *netdev)
 	mlx5i_uninit_underlay_qp(priv);
 	mlx5e_deactivate_priv_channels(priv);
 	mlx5e_close_channels(&priv->channels);
-	mlx5e_destroy_tis(mdev, priv->tisn[0]);
+	mlx5e_destroy_tis(mdev, priv->tisn[0][0]);
 unlock:
 	mutex_unlock(&priv->state_lock);
 	return 0;

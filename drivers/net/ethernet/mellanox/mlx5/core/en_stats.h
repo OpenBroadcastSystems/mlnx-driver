@@ -75,14 +75,16 @@ struct mlx5e_sw_stats {
 	u64 rx_csum_complete_tail_slow;
 	u64 rx_csum_unnecessary_inner;
 #ifdef HAVE_XDP_BUFF
-	u64 rx_xdp_drop;
+       u64 rx_xdp_drop;
 #ifdef HAVE_XDP_REDIRECT
-	u64 rx_xdp_redirect;
+       u64 rx_xdp_redirect;
 #endif
-	u64 rx_xdp_tx_xmit;
-	u64 rx_xdp_tx_full;
-	u64 rx_xdp_tx_err;
-	u64 rx_xdp_tx_cqe;
+       u64 rx_xdp_tx_xmit;
+       u64 rx_xdp_tx_mpwqe;
+       u64 rx_xdp_tx_inlnw;
+       u64 rx_xdp_tx_full;
+       u64 rx_xdp_tx_err;
+       u64 rx_xdp_tx_cqe;
 #endif
 	u64 tx_csum_none;
 	u64 tx_csum_partial;
@@ -101,6 +103,8 @@ struct mlx5e_sw_stats {
 #endif
 #ifdef HAVE_XDP_REDIRECT
 	u64 tx_xdp_xmit;
+	u64 tx_xdp_mpwqe;
+	u64 tx_xdp_inlnw;
 	u64 tx_xdp_full;
 	u64 tx_xdp_err;
 	u64 tx_xdp_cqes;
@@ -112,9 +116,10 @@ struct mlx5e_sw_stats {
 	u64 rx_buff_alloc_err;
 	u64 rx_cqe_compress_blks;
 	u64 rx_cqe_compress_pkts;
-	u64 rx_page_reuse;
 	u64 rx_cache_reuse;
 	u64 rx_cache_full;
+	u64 rx_cache_empty;
+	u64 rx_cache_busy;
 	u64 rx_cache_ext;
 	u64 rx_cache_rdc;
 	u64 rx_cache_alloc;
@@ -217,9 +222,10 @@ struct mlx5e_rq_stats {
 	u64 buff_alloc_err;
 	u64 cqe_compress_blks;
 	u64 cqe_compress_pkts;
-	u64 page_reuse;
 	u64 cache_reuse;
 	u64 cache_full;
+	u64 cache_empty;
+	u64 cache_busy;
 	u64 cache_ext;
 	u64 cache_rdc;
 	u64 cache_alloc;
@@ -259,6 +265,8 @@ struct mlx5e_sq_stats {
 #ifdef HAVE_XDP_BUFF
 struct mlx5e_xdpsq_stats {
 	u64 xmit;
+	u64 mpwqe;
+	u64 inlnw;
 	u64 full;
 	u64 err;
 	/* dirtied @completion */
@@ -305,8 +313,11 @@ extern const struct mlx5e_stats_grp mlx5e_stats_grps[];
 extern const int mlx5e_num_stats_grps;
 extern const struct mlx5e_stats_grp mlx5e_rep_stats_grps[];
 extern const int mlx5e_rep_num_stats_grps;
+extern const struct mlx5e_stats_grp mlx5e_ul_rep_stats_grps[];
+extern const int mlx5e_ul_rep_num_stats_grps;
 
 void mlx5e_grp_sw_update_stats(struct mlx5e_priv *priv);
 void mlx5e_grp_802_3_update_stats(struct mlx5e_priv *priv);
+void mlx5e_grp_rep_sw_update_stats(struct mlx5e_priv *priv);
 
 #endif /* __MLX5_EN_STATS_H__ */

@@ -59,11 +59,8 @@ int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv,
 
 	ring = kzalloc_node(sizeof(*ring), GFP_KERNEL, node);
 	if (!ring) {
-		ring = kzalloc(sizeof(*ring), GFP_KERNEL);
-		if (!ring) {
-			en_err(priv, "Failed allocating TX ring\n");
-			return -ENOMEM;
-		}
+		en_err(priv, "Failed allocating TX ring\n");
+		return -ENOMEM;
 	}
 
 	ring->size = size;
@@ -730,17 +727,22 @@ static void build_inline_wqe(struct mlx4_en_tx_desc *tx_desc,
 	}
 }
 
-#if defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
+#ifdef NDO_SELECT_QUEUE_HAS_3_PARMS_NO_FALLBACK
+u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
+		       struct net_device *sb_dev)
+
+#elif defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
+
 u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
 #ifdef HAVE_SELECT_QUEUE_FALLBACK_T
 #ifdef HAVE_SELECT_QUEUE_NET_DEVICE
-			 struct net_device *sb_dev,
+		       struct net_device *sb_dev,
 #else
-			 void *accel_priv,
+		       void *accel_priv,
 #endif /* HAVE_SELECT_QUEUE_NET_DEVICE */
-			 select_queue_fallback_t fallback)
+		       select_queue_fallback_t fallback)
 #else
-			 void *accel_priv)
+		       void *accel_priv)
 #endif
 #else /* NDO_SELECT_QUEUE_HAS_ACCEL_PRIV || HAVE_SELECT_QUEUE_FALLBACK_T */
 u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb)
@@ -750,15 +752,20 @@ u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb)
 	u16 rings_p_up = priv->num_tx_rings_p_up;
 
 	if (netdev_get_num_tc(dev))
-#ifdef HAVE_SELECT_QUEUE_FALLBACK_T_3_PARAMS
-		return fallback(dev, skb, NULL);
+#ifdef NDO_SELECT_QUEUE_HAS_3_PARMS_NO_FALLBACK
+		return netdev_pick_tx(dev, skb, NULL);
 
-	return fallback(dev, skb, NULL) % rings_p_up;
+	return netdev_pick_tx(dev, skb, NULL) % rings_p_up;
+#elif defined (HAVE_SELECT_QUEUE_FALLBACK_T_3_PARAMS)
+ 		return fallback(dev, skb, NULL);
+ 
+ 	return fallback(dev, skb, NULL) % rings_p_up;
 #else
 		return fallback(dev, skb);
 
 	return fallback(dev, skb) % rings_p_up;
 #endif
+
 }
 
 static void mlx4_bf_copy(void __iomem *dst, const void *src,
@@ -1105,7 +1112,7 @@ static inline netdev_tx_t __mlx4_en_xmit(struct sk_buff *skb,
 		ring->packets++;
 	}
 	ring->bytes += tx_info->nr_bytes;
-#ifndef HAVE_NETDEV_TX_SEND_QUEUE
+#if !defined(HAVE_NETDEV_TX_SEND_QUEUE) || !defined(HAVE_SK_BUFF_XMIT_MORE)
 	netdev_tx_sent_queue(ring->tx_queue, tx_info->nr_bytes);
 #endif
 	AVG_PERF_COUNTER(priv->pstats.tx_pktsz_avg, skb->len);
@@ -1152,7 +1159,11 @@ static inline netdev_tx_t __mlx4_en_xmit(struct sk_buff *skb,
 #ifdef HAVE_NETDEV_TX_SEND_QUEUE
 	send_doorbell = __netdev_tx_sent_queue(ring->tx_queue,
 					       tx_info->nr_bytes,
+#ifdef HAVE_NETDEV_XMIT_MORE
+					       netdev_xmit_more());
+#else
 					       skb->xmit_more);
+#endif
 #else
 	send_doorbell = !skb->xmit_more || netif_xmit_stopped(ring->tx_queue);
 #endif
@@ -1321,7 +1332,11 @@ netdev_tx_t mlx4_en_xmit_frame(struct mlx4_en_rx_ring *rx_ring,
 	/* Ensure new descriptor hits memory
 	 * before setting ownership of this descriptor to HW
 	 */
-	dma_wmb();
+#ifdef dma_wmb
+		dma_wmb();
+#else
+		wmb();
+#endif
 	tx_desc->ctrl.owner_opcode = op_own;
 	ring->xmit_more++;
 

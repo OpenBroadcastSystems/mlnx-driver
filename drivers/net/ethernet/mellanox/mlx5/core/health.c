@@ -38,9 +38,11 @@
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/cmd.h>
 #include "mlx5_core.h"
+#include "lib/eq.h"
+#include "lib/mlx5.h"
 
 enum {
-	MLX5_HEALTH_POLL_INTERVAL	= 2 * HZ,
+	MLX5_HEALTH_POLL_INTERVAL	= HZ/2,
 	MAX_MISSES			= 3,
 };
 
@@ -205,24 +207,18 @@ void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 		goto unlock;
 	}
 
-	if (pci_channel_offline(dev->pdev))
-		mlx5_core_eq_disable_irqs(dev);
-
+	fatal_error = mlx5_check_fatal_sensors(dev);
 	if (force)
 		mlx5_core_dbg(dev, "start\n");
 	else
 		mlx5_core_err(dev, "start\n");
 
-	fatal_error = mlx5_check_fatal_sensors(dev);
-
 	if (fatal_error || force) {
 		dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
-		mlx5_lock_and_flush_cmdif(dev);
-		mlx5_unlock_cmdif(dev);
+		mlx5_cmd_flush(dev);
 	}
 
-	mlx5_core_event(dev, MLX5_DEV_EVENT_SYS_ERROR, 1);
-
+	mlx5_notifier_call_chain(dev->priv.events, MLX5_DEV_EVENT_SYS_ERROR, (void *)1);
 	if (force)
 		goto err_state_done;
 
@@ -261,6 +257,7 @@ void mlx5_enter_error_state(struct mlx5_core_dev *dev, bool force)
 		lock_sem_sw_reset(dev, UNLOCK);
 
 err_state_done:
+
 	if (force)
 		mlx5_core_dbg(dev, "end\n");
 	else
@@ -306,6 +303,7 @@ static void mlx5_handle_bad_state(struct mlx5_core_dev *dev)
 	mlx5_disable_device(dev);
 }
 
+
 static void health_recover(struct work_struct *work)
 {
 	struct mlx5_core_health *health;
@@ -323,7 +321,7 @@ static void health_recover(struct work_struct *work)
 		return;
 	}
 
-	dev_err(&dev->pdev->dev, "starting health recovery flow\n");
+	mlx5_core_err(dev, "starting health recovery flow\n");
 	mlx5_recover_device(dev);
 }
 
@@ -359,8 +357,8 @@ static void health_care(struct work_struct *work)
 			       recover_delay);
 		schedule_delayed_work(&health->recover_work, recover_delay);
 	} else {
-		dev_err(&dev->pdev->dev,
-			"new health works are not permitted at this stage\n");
+		mlx5_core_err(dev,
+			      "new health works are not permitted at this stage\n");
 	}
 	spin_unlock_irqrestore(&health->wq_lock, flags);
 }
@@ -408,29 +406,27 @@ static void print_health_info(struct mlx5_core_dev *dev)
 		return;
 
 	for (i = 0; i < ARRAY_SIZE(h->assert_var); i++)
-		dev_err(&dev->pdev->dev, "assert_var[%d] 0x%08x\n", i, ioread32be(h->assert_var + i));
+		mlx5_core_err(dev, "assert_var[%d] 0x%08x\n", i,
+			      ioread32be(h->assert_var + i));
 
-	dev_err(&dev->pdev->dev, "assert_exit_ptr 0x%08x\n", ioread32be(&h->assert_exit_ptr));
-	dev_err(&dev->pdev->dev, "assert_callra 0x%08x\n", ioread32be(&h->assert_callra));
+	mlx5_core_err(dev, "assert_exit_ptr 0x%08x\n",
+		      ioread32be(&h->assert_exit_ptr));
+	mlx5_core_err(dev, "assert_callra 0x%08x\n",
+		      ioread32be(&h->assert_callra));
 	sprintf(fw_str, "%d.%d.%d", fw_rev_maj(dev), fw_rev_min(dev), fw_rev_sub(dev));
-	dev_err(&dev->pdev->dev, "fw_ver %s\n", fw_str);
-	dev_err(&dev->pdev->dev, "hw_id 0x%08x\n", ioread32be(&h->hw_id));
-	dev_err(&dev->pdev->dev, "irisc_index %d\n", ioread8(&h->irisc_index));
-	dev_err(&dev->pdev->dev, "synd 0x%x: %s\n", ioread8(&h->synd), hsynd_str(ioread8(&h->synd)));
-	dev_err(&dev->pdev->dev, "ext_synd 0x%04x\n", ioread16be(&h->ext_synd));
+	mlx5_core_err(dev, "fw_ver %s\n", fw_str);
+	mlx5_core_err(dev, "hw_id 0x%08x\n", ioread32be(&h->hw_id));
+	mlx5_core_err(dev, "irisc_index %d\n", ioread8(&h->irisc_index));
+	mlx5_core_err(dev, "synd 0x%x: %s\n", ioread8(&h->synd),
+		      hsynd_str(ioread8(&h->synd)));
+	mlx5_core_err(dev, "ext_synd 0x%04x\n", ioread16be(&h->ext_synd));
 	fw = ioread32be(&h->fw_ver);
-	dev_err(&dev->pdev->dev, "raw fw_ver 0x%08x\n", fw);
+	mlx5_core_err(dev, "raw fw_ver 0x%08x\n", fw);
 }
 
 static unsigned long get_next_poll_jiffies(void)
 {
-	unsigned long next;
-
-	get_random_bytes(&next, sizeof(next));
-	next %= HZ;
-	next += jiffies + MLX5_HEALTH_POLL_INTERVAL;
-
-	return next;
+	return jiffies + MLX5_HEALTH_POLL_INTERVAL;
 }
 
 void mlx5_trigger_health_work(struct mlx5_core_dev *dev)
@@ -442,8 +438,7 @@ void mlx5_trigger_health_work(struct mlx5_core_dev *dev)
 	if (!test_bit(MLX5_DROP_NEW_HEALTH_WORK, &health->flags))
 		queue_work(health->wq, &health->work);
 	else
-		dev_err(&dev->pdev->dev,
-			"new health works are not permitted at this stage\n");
+		mlx5_core_err(dev, "new health works are not permitted at this stage\n");
 	spin_unlock_irqrestore(&health->wq_lock, flags);
 }
 
@@ -473,7 +468,7 @@ static void poll_health(unsigned long data)
 
 	health->prev = count;
 	if (health->miss_counter == MAX_MISSES) {
-		dev_err(&dev->pdev->dev, "device's health compromised - reached miss count\n");
+		mlx5_core_err(dev, "device's health compromised - reached miss count\n");
 		print_health_info(dev);
 	}
 
@@ -550,6 +545,13 @@ void mlx5_drain_health_recovery(struct mlx5_core_dev *dev)
 	cancel_delayed_work_sync(&dev->priv.health.recover_work);
 }
 
+void mlx5_health_flush(struct mlx5_core_dev *dev)
+{
+	struct mlx5_core_health *health = &dev->priv.health;
+
+	flush_workqueue(health->wq);
+}
+
 void mlx5_health_cleanup(struct mlx5_core_dev *dev)
 {
 	struct mlx5_core_health *health = &dev->priv.health;
@@ -568,7 +570,7 @@ int mlx5_health_init(struct mlx5_core_dev *dev)
 		return -ENOMEM;
 
 	strcpy(name, "mlx5_health");
-	strcat(name, dev_name(&dev->pdev->dev));
+	strcat(name, dev_name(dev->device));
 	health->wq = create_singlethread_workqueue(name);
 	kfree(name);
 	if (!health->wq)

@@ -68,7 +68,7 @@
 #include "mlx4_stats.h"
 
 #define DRV_NAME	"mlx4_en"
-#define DRV_VERSION	"4.6-1.0.1"
+#define DRV_VERSION	"4.7-1.0.0"
 
 #ifndef CONFIG_COMPAT_DISABLE_DCB
 #ifdef CONFIG_MLX4_EN_DCB
@@ -1010,21 +1010,26 @@ int mlx4_en_set_cq_moder(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq);
 void mlx4_en_arm_cq(struct mlx4_en_priv *priv, struct mlx4_en_cq *cq);
 
 void mlx4_en_tx_irq(struct mlx4_cq *mcq);
-#if defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
+#ifdef NDO_SELECT_QUEUE_HAS_3_PARMS_NO_FALLBACK
+u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
+		       struct net_device *sb_dev);
+
+#elif defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
+
 u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
 #ifdef HAVE_SELECT_QUEUE_FALLBACK_T
 #ifdef HAVE_SELECT_QUEUE_NET_DEVICE
-			 struct net_device *sb_dev,
+		       struct net_device *sb_dev,
 #else
-			 void *accel_priv,
+		       void *accel_priv,
 #endif /* HAVE_SELECT_QUEUE_NET_DEVICE */
-			 select_queue_fallback_t fallback);
+		       select_queue_fallback_t fallback);
 #else
-			 void *accel_priv);
+		       void *accel_priv);
 #endif
 #else /* NDO_SELECT_QUEUE_HAS_ACCEL_PRIV || HAVE_SELECT_QUEUE_FALLBACK_T */
 u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb);
-#endif
+#endif /* HAVE_3_PARAMS_FOR_NDO_SELECT_QUEUE */
 netdev_tx_t mlx4_en_xmit(struct sk_buff *skb, struct net_device *dev);
 netdev_tx_t mlx4_en_vgtp_xmit(struct sk_buff *skb, struct net_device *dev);
 #ifdef HAVE_XDP_BUFF

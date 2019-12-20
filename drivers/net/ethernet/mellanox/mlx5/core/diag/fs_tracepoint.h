@@ -77,6 +77,41 @@ const char *parse_fs_dst(struct trace_seq *p,
 			 const struct mlx5_flow_destination *dst,
 			 u32 counter_id);
 
+TRACE_EVENT(mlx5_fs_add_ft,
+	    TP_PROTO(const struct mlx5_flow_table *ft),
+	    TP_ARGS(ft),
+	    TP_STRUCT__entry(
+		__field(const struct mlx5_flow_table *, ft)
+		__field(u32, id)
+		__field(u32, level)
+		__field(u32, type)
+	    ),
+	    TP_fast_assign(
+			   __entry->ft = ft;
+			   __entry->id = ft->id;
+			   __entry->level = ft->level;
+			   __entry->type = ft->type;
+	    ),
+	    TP_printk("ft=%p id=%u level=%u type=%u \n",
+		      __entry->ft, __entry->id, __entry->level, __entry->type)
+	    );
+
+TRACE_EVENT(mlx5_fs_del_ft,
+	    TP_PROTO(const struct mlx5_flow_table *ft),
+	    TP_ARGS(ft),
+	    TP_STRUCT__entry(
+		__field(const struct mlx5_flow_table *, ft)
+		__field(u32, id)
+	    ),
+	    TP_fast_assign(
+			   __entry->ft = ft;
+			   __entry->id = ft->id;
+
+	    ),
+	    TP_printk("ft=%p id=%u\n",
+		      __entry->ft, __entry->id)
+	    );
+
 TRACE_EVENT(mlx5_fs_add_fg,
 	    TP_PROTO(const struct mlx5_flow_group *fg),
 	    TP_ARGS(fg),
@@ -185,7 +220,7 @@ TRACE_EVENT(mlx5_fs_set_fte,
 			   __entry->index = fte->index;
 			   __entry->action = fte->action.action;
 			   __entry->mask_enable = __entry->fg->mask.match_criteria_enable;
-			   __entry->flow_tag = fte->action.flow_tag;
+			   __entry->flow_tag = fte->flow_context.flow_tag;
 			   memcpy(__entry->mask_outer,
 				  MLX5_ADDR_OF(fte_match_param,
 					       &__entry->fg->mask.match_criteria,

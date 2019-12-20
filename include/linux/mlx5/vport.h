@@ -44,9 +44,6 @@
 				   MLX5_VPORT_UPLINK_PLACEHOLDER +	\
 				   MLX5_VPORT_ECPF_PLACEHOLDER(mdev))
 
-#define MLX5_TOTAL_VPORTS(mdev)	(MLX5_SPECIAL_VPORTS(mdev) +		\
-				 mlx5_core_max_vfs(mdev))
-
 #define MLX5_VPORT_MANAGER(mdev)					\
 	(MLX5_CAP_GEN(mdev, vport_group_manager) &&			\
 	 (MLX5_CAP_GEN(mdev, port_type) == MLX5_CAP_PORT_TYPE_ETH) &&	\
@@ -58,6 +55,7 @@ enum {
 	MLX5_CAP_INLINE_MODE_NOT_REQUIRED,
 };
 
+/* Vport number for each function must keep unchanged */
 enum {
 	MLX5_VPORT_PF			= 0x0,
 	MLX5_VPORT_FIRST_VF		= 0x1,
@@ -85,7 +83,7 @@ int mlx5_query_nic_vport_mtu(struct mlx5_core_dev *mdev, u16 *mtu);
 int mlx5_modify_nic_vport_mtu(struct mlx5_core_dev *mdev, u16 mtu);
 int mlx5_query_nic_vport_system_image_guid(struct mlx5_core_dev *mdev,
 					   u64 *system_image_guid);
-int mlx5_query_nic_vport_node_guid(struct mlx5_core_dev *mdev, u16 vport,
+int mlx5_query_nic_vport_node_guid(struct mlx5_core_dev *mdev, u32 vport,
 				   u64 *node_guid);
 int mlx5_modify_nic_vport_node_guid(struct mlx5_core_dev *mdev,
 				    u16 vport, u64 node_guid);
@@ -125,7 +123,7 @@ int mlx5_modify_nic_vport_promisc(struct mlx5_core_dev *mdev,
 				  int promisc_uc,
 				  int promisc_mc,
 				  int promisc_all);
-int mlx5_query_nic_vport_vlans(struct mlx5_core_dev *dev, u16 vport,
+int mlx5_query_nic_vport_vlans(struct mlx5_core_dev *dev, u32 vport,
 			       unsigned long *vlans);
 int mlx5_modify_nic_vport_vlans(struct mlx5_core_dev *dev,
 				u16 vlans[],
@@ -149,11 +147,6 @@ int mlx5_nic_vport_query_local_lb(struct mlx5_core_dev *mdev, bool *status);
 int mlx5_nic_vport_affiliate_multiport(struct mlx5_core_dev *master_mdev,
 				       struct mlx5_core_dev *port_mdev);
 int mlx5_nic_vport_unaffiliate_multiport(struct mlx5_core_dev *port_mdev);
-
-#ifdef CONFIG_BF_DEVICE_EMULATION
-int mlx5_query_nic_vport_mac_address_emulation(struct mlx5_core_dev *mdev,
-					       u16 vport, u8 *addr);
-#endif
 
 u64 mlx5_query_nic_system_image_guid(struct mlx5_core_dev *mdev);
 #endif /* __MLX5_VPORT_H__ */

@@ -37,7 +37,9 @@
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/port.h>
 #include "mlx5_core.h"
+#ifdef CONFIG_MLX5_ESWITCH
 #include "eswitch.h"
+#endif
 
 struct vf_attributes {
 	struct attribute attr;
@@ -74,6 +76,7 @@ static ssize_t vf_attr_store(struct kobject *kobj,
 	return ga->store(g, ga, buf, size);
 }
 
+#ifdef CONFIG_MLX5_ESWITCH
 struct vf_group_attributes {
 	struct attribute attr;
 	ssize_t (*show)(struct mlx5_vgroup *, struct vf_group_attributes *,
@@ -130,11 +133,37 @@ static ssize_t max_tx_rate_group_store(struct mlx5_vgroup *g,
 	if (err != 1)
 		return -EINVAL;
 
-	err = mlx5_eswitch_set_vgroup_rate(esw, g->group_id, max_rate);
+	err = mlx5_eswitch_set_vgroup_max_rate(esw, g->group_id, max_rate);
 
 	return err ? err : count;
 }
 
+static ssize_t min_tx_rate_group_show(struct mlx5_vgroup *g,
+				      struct vf_group_attributes *oa,
+				      char *buf)
+{
+	return sprintf(buf,
+		       "usage: write <Rate (Mbit/s)> to set VF group min rate\n");
+}
+
+static ssize_t min_tx_rate_group_store(struct mlx5_vgroup *g,
+				       struct vf_group_attributes *oa,
+				       const char *buf, size_t count)
+{
+	struct mlx5_core_dev *dev = g->dev;
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
+	u32 min_rate;
+	int err;
+
+	err = sscanf(buf, "%u", &min_rate);
+	if (err != 1)
+		return -EINVAL;
+
+	err = mlx5_eswitch_set_vgroup_min_rate(esw, g->group_id, min_rate);
+
+	return err ? err : count;
+}
+#endif
 static ssize_t port_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 			 char *buf)
 {
@@ -797,6 +826,8 @@ static ssize_t config_group_show(struct mlx5_vgroup *g,
 	mutex_lock(&esw->state_lock);
 	p += _sprintf(p, buf, "Num VFs    : %d\n", g->num_vports);
 	p += _sprintf(p, buf, "MaxRate    : %d\n", g->max_rate);
+	p += _sprintf(p, buf, "MinRate    : %d\n", g->min_rate);
+	p += _sprintf(p, buf, "BWShare(Indirect cfg)    : %d\n", g->bw_share);
 	mutex_unlock(&esw->state_lock);
 
 	return (ssize_t)(p - buf);
@@ -816,6 +847,7 @@ static ssize_t stats_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	struct ifla_vf_stats_backport ifi_backport;
 #endif
 	struct mlx5_core_dev *dev = g->dev;
+	struct mlx5_vport *vport = mlx5_eswitch_get_vport(dev->priv.eswitch, g->vf + 1);
 	struct ifla_vf_stats ifi;
 	struct mlx5_vport_drop_stats stats = {};
 	int err;
@@ -824,12 +856,13 @@ static ssize_t stats_show(struct mlx5_sriov_vf *g, struct vf_attributes *oa,
 	err = mlx5_eswitch_get_vport_stats(dev->priv.eswitch, g->vf + 1, &ifi);
 	if (err)
 		return -EINVAL;
+
 #ifndef HAVE_STRUCT_IFLA_VF_STATS_TX_BROADCAST
 	err = mlx5_eswitch_get_vport_stats_backport(dev->priv.eswitch, g->vf + 1, &ifi_backport);
 	if (err)
 		return -EINVAL;
 #endif
-	err = mlx5_eswitch_query_vport_drop_stats(dev, g->vf + 1, &stats);
+	err = mlx5_eswitch_query_vport_drop_stats(dev, vport, &stats);
 	if (err)
 		return -EINVAL;
 
@@ -898,6 +931,7 @@ static struct sysfs_ops vf_sysfs_ops = {
 	.store = vf_attr_store,
 };
 
+#ifdef CONFIG_MLX5_ESWITCH
 #ifdef CONFIG_COMPAT_IS_CONST_KOBJECT_SYSFS_OPS
 static const struct sysfs_ops vf_group_sysfs_ops = {
 #else
@@ -906,6 +940,7 @@ static struct sysfs_ops vf_group_sysfs_ops = {
 	.show = vf_group_attr_show,
 	.store = vf_group_attr_store,
 };
+#endif
 
 #define VF_RATE_GROUP_ATTR(_name) struct vf_group_attributes vf_group_attr_##_name = \
 	__ATTR(_name, 0644, _name##_group_show, _name##_group_store)
@@ -929,6 +964,7 @@ VF_ATTR(trunk);
 VF_ATTR(stats);
 VF_ATTR(group);
 VF_RATE_GROUP_ATTR(max_tx_rate);
+VF_RATE_GROUP_ATTR(min_tx_rate);
 VF_RATE_GROUP_ATTR(config);
 
 static struct attribute *vf_eth_attrs[] = {
@@ -949,6 +985,7 @@ static struct attribute *vf_eth_attrs[] = {
 
 static struct attribute *vf_group_attrs[] = {
 	&vf_group_attr_max_tx_rate.attr,
+	&vf_group_attr_min_tx_rate.attr,
 	&vf_group_attr_config.attr,
 	NULL
 };
@@ -1029,7 +1066,9 @@ err_attr:
 		sriov->groups_config = NULL;
 	}
 
+#ifdef CONFIG_MLX5_ESWITCH
 err_groups:
+#endif
 	kobject_put(sriov->config);
 	sriov->config = NULL;
 	return err;
@@ -1053,10 +1092,10 @@ void mlx5_sriov_sysfs_cleanup(struct mlx5_core_dev *dev)
 int mlx5_create_vf_group_sysfs(struct mlx5_core_dev *dev,
 			       u32 group_id, struct kobject *group_kobj)
 {
+#ifdef CONFIG_MLX5_ESWITCH
 	struct mlx5_core_sriov *sriov = &dev->priv.sriov;
 	int err;
 
-#ifdef CONFIG_MLX5_ESWITCH
 	err = kobject_init_and_add(group_kobj, &vf_group, sriov->groups_config,
 				   "%d", group_id);
 	if (err)

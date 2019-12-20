@@ -123,7 +123,7 @@ static ssize_t esw_compat_write(struct kobject *kobj,
 	struct mlx5_core_dev *dev = cdevlink->mdev;
 	struct devlink *devlink = priv_to_devlink(dev);
 #ifdef HAVE_NETLINK_EXT_ACK
-	struct netlink_ext_ack ack = { ._msg = NULL };
+	static struct netlink_ext_ack ack = { ._msg = NULL };
 #endif
 	const char *entname = attr->attr.name;
 	struct devlink_compat_op *op = 0;
@@ -184,9 +184,6 @@ int mlx5_eswitch_compat_sysfs_init(struct net_device *netdev)
 	int i;
 	int err;
 
-	if (!MLX5_VPORT_MANAGER(priv->mdev))
-		return 0;
-
 	priv->compat_kobj = kobject_create_and_add("compat",
 						   &netdev->dev.kobj);
 	if (!priv->compat_kobj)
@@ -205,7 +202,6 @@ int mlx5_eswitch_compat_sysfs_init(struct net_device *netdev)
 		err = -ENOMEM;
 		goto cleanup_devlink;
 	}
-
 	priv->devlink_attributes = cdevlink;
 
 	for (i = 0; i < ARRAY_SIZE(devlink_compat_ops); i++) {
@@ -220,7 +216,7 @@ int mlx5_eswitch_compat_sysfs_init(struct net_device *netdev)
 					       &kobj->attr));
 		cdevlink++;
 	}
-
+	
 	return 0;
 
 cleanup_devlink:
@@ -266,4 +262,4 @@ void mlx5_eswitch_compat_sysfs_cleanup(struct net_device *netdev)
 {
 }
 
-#endif
+#endif /* CONFIG_MLX5_ESWITCH */

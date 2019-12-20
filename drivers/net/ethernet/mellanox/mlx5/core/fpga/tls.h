@@ -38,7 +38,12 @@
 
 #include <linux/mlx5/driver.h>
 
+#ifdef HAVE_NET_TLS_H
 #include <net/tls.h>
+#else
+#include <uapi/linux/tls.h>
+#endif
+
 #include "fpga/core.h"
 
 struct mlx5_fpga_tls {

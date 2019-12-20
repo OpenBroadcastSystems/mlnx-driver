@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * NVMe over Fabrics loopback device.
  * Copyright (c) 2015-2016 HGST, a Western Digital Company.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 #ifdef pr_fmt
 #undef pr_fmt
@@ -29,7 +21,7 @@
 struct nvme_loop_iod {
 	struct nvme_request	nvme_req;
 	struct nvme_command	cmd;
-	struct nvme_completion	rsp;
+	struct nvme_completion	cqe;
 	struct nvmet_req	req;
 	struct nvme_loop_queue	*queue;
 	struct work_struct	work;
@@ -88,7 +80,11 @@ static void nvme_loop_complete_rq(struct request *req)
 	struct nvme_loop_iod *iod = blk_mq_rq_to_pdu(req);
 
 	nvme_cleanup_cmd(req);
+#ifdef HAVE_SG_ALLOC_TABLE_CHAINED_NENTS_FIRST_CHUNK_PARAM
+	sg_free_table_chained(&iod->sg_table, SG_CHUNK_SIZE);
+#else
 	sg_free_table_chained(&iod->sg_table, true);
+#endif
 	nvme_complete_rq(req);
 }
 
@@ -105,7 +101,7 @@ static void nvme_loop_queue_response(struct nvmet_req *req)
 {
 	struct nvme_loop_queue *queue =
 		container_of(req->sq, struct nvme_loop_queue, nvme_sq);
-	struct nvme_completion *cqe = req->rsp;
+	struct nvme_completion *cqe = req->cqe;
 
 	/*
 	 * AEN requests are special as they don't time out and can
@@ -140,24 +136,6 @@ static void nvme_loop_execute_work(struct work_struct *work)
 	nvmet_req_execute(&iod->req);
 }
 
-static enum blk_eh_timer_return
-nvme_loop_timeout(struct request *rq, bool reserved)
-{
-	struct nvme_loop_iod *iod = blk_mq_rq_to_pdu(rq);
-
-	/* queue error recovery */
-	nvme_reset_ctrl(&iod->queue->ctrl->ctrl);
-
-	/* fail with DNR on admin cmd timeout */
-	nvme_req(rq)->status = NVME_SC_ABORT_REQ | NVME_SC_DNR;
-
-#ifdef HAVE_BLK_EH_DONE
-	return BLK_EH_DONE;
-#else
-	return BLK_EH_HANDLED;
-#endif
-}
-
 static blk_status_t nvme_loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 		const struct blk_mq_queue_data *bd)
 {
@@ -184,14 +162,16 @@ static blk_status_t nvme_loop_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 	if (blk_rq_nr_phys_segments(req)) {
 		iod->sg_table.sgl = iod->first_sgl;
-#ifdef HAVE_SG_ALLOC_TABLE_CHAINED_4_PARAMS
+#ifdef HAVE_SG_ALLOC_TABLE_CHAINED_NENTS_FIRST_CHUNK_PARAM
 		if (sg_alloc_table_chained(&iod->sg_table,
 				blk_rq_nr_phys_segments(req),
-				GFP_ATOMIC,
-				iod->sg_table.sgl))
+				iod->sg_table.sgl, SG_CHUNK_SIZE))
 #else
 		if (sg_alloc_table_chained(&iod->sg_table,
 				blk_rq_nr_phys_segments(req),
+#ifdef HAVE_SG_ALLOC_TABLE_CHAINED_4_PARAMS
+				GFP_ATOMIC,
+#endif
 				iod->sg_table.sgl))
 #endif
 			return BLK_STS_RESOURCE;
@@ -233,7 +213,7 @@ static int nvme_loop_init_iod(struct nvme_loop_ctrl *ctrl,
 		struct nvme_loop_iod *iod, unsigned int queue_idx)
 {
 	iod->req.cmd = &iod->cmd;
-	iod->req.rsp = &iod->rsp;
+	iod->req.cqe = &iod->cqe;
 	iod->queue = &ctrl->queues[queue_idx];
 	INIT_WORK(&iod->work, nvme_loop_execute_work);
 	return 0;
@@ -255,6 +235,9 @@ static int nvme_loop_init_request(void *data, struct request *req,
 		unsigned int hctx_idx, unsigned int rq_idx,
 		unsigned int numa_node)
 {
+	struct nvme_loop_ctrl *ctrl = data;
+
+	nvme_req(req)->ctrl = &ctrl->ctrl;
 	return nvme_loop_init_iod(data, blk_mq_rq_to_pdu(req), hctx_idx + 1);
 }
 
@@ -262,6 +245,9 @@ static int nvme_loop_init_admin_request(void *data, struct request *req,
 		unsigned int hctx_idx, unsigned int rq_idx,
 		unsigned int numa_node)
 {
+	struct nvme_loop_ctrl *ctrl = data;
+
+	nvme_req(req)->ctrl = &ctrl->ctrl;
 	return nvme_loop_init_iod(data, blk_mq_rq_to_pdu(req), 0);
 }
 #endif
@@ -290,7 +276,7 @@ static int nvme_loop_init_admin_hctx(struct blk_mq_hw_ctx *hctx, void *data,
 	return 0;
 }
 
-#ifdef HAVE_BLK_MQ_TAG_SET_HAS_CONST_POS
+#ifdef HAVE_BLK_MQ_TAG_SET_HAS_CONST_OPS
 static const struct blk_mq_ops nvme_loop_mq_ops = {
 #else
 static struct blk_mq_ops nvme_loop_mq_ops = {
@@ -298,14 +284,13 @@ static struct blk_mq_ops nvme_loop_mq_ops = {
 	.queue_rq	= nvme_loop_queue_rq,
 	.complete	= nvme_loop_complete_rq,
 #ifdef HAVE_BLK_MQ_OPS_MAP_QUEUE
-	.map_queue      = blk_mq_map_queue,
+	.map_queue	= blk_mq_map_queue,
 #endif
 	.init_request	= nvme_loop_init_request,
 	.init_hctx	= nvme_loop_init_hctx,
-	.timeout	= nvme_loop_timeout,
 };
 
-#ifdef HAVE_BLK_MQ_TAG_SET_HAS_CONST_POS
+#ifdef HAVE_BLK_MQ_TAG_SET_HAS_CONST_OPS
 static const struct blk_mq_ops nvme_loop_admin_mq_ops = {
 #else
 static struct blk_mq_ops nvme_loop_admin_mq_ops = {
@@ -313,7 +298,7 @@ static struct blk_mq_ops nvme_loop_admin_mq_ops = {
 	.queue_rq	= nvme_loop_queue_rq,
 	.complete	= nvme_loop_complete_rq,
 #ifdef HAVE_BLK_MQ_OPS_MAP_QUEUE
-	.map_queue      = blk_mq_map_queue,
+	.map_queue	= blk_mq_map_queue,
 #endif
 #ifdef HAVE_BLK_MQ_OPS_INIT_REQUEST_HAS_4_PARAMS
 	.init_request	= nvme_loop_init_request,
@@ -321,7 +306,6 @@ static struct blk_mq_ops nvme_loop_admin_mq_ops = {
 	.init_request	= nvme_loop_init_admin_request,
 #endif
 	.init_hctx	= nvme_loop_init_admin_hctx,
-	.timeout	= nvme_loop_timeout,
 };
 
 static void nvme_loop_destroy_admin_queue(struct nvme_loop_ctrl *ctrl)
@@ -397,7 +381,7 @@ static int nvme_loop_connect_io_queues(struct nvme_loop_ctrl *ctrl)
 	int i, ret;
 
 	for (i = 1; i < ctrl->ctrl.queue_count; i++) {
-		ret = nvmf_connect_io_queue(&ctrl->ctrl, i);
+		ret = nvmf_connect_io_queue(&ctrl->ctrl, i, false);
 		if (ret)
 			return ret;
 		set_bit(NVME_LOOP_Q_LIVE, &ctrl->queues[i].flags);
@@ -744,6 +728,14 @@ static void nvme_loop_remove_port(struct nvmet_port *port)
 	mutex_lock(&nvme_loop_ports_mutex);
 	list_del_init(&port->entry);
 	mutex_unlock(&nvme_loop_ports_mutex);
+
+	/*
+	 * Ensure any ctrls that are in the process of being
+	 * deleted are in fact deleted before we return
+	 * and free the port. This is to prevent active
+	 * ctrls from using a port after it's freed.
+	 */
+	flush_workqueue(nvme_delete_wq);
 }
 
 static const struct nvmet_fabrics_ops nvme_loop_ops = {
@@ -796,4 +788,7 @@ module_init(nvme_loop_init_module);
 module_exit(nvme_loop_cleanup_module);
 
 MODULE_LICENSE("GPL v2");
+#ifdef RETPOLINE_MLNX
+MODULE_INFO(retpoline, "Y");
+#endif
 MODULE_ALIAS("nvmet-transport-254"); /* 254 == NVMF_TRTYPE_LOOP */

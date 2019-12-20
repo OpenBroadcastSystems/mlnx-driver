@@ -73,8 +73,8 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 4.6}
-%{!?_release: %global _release 1.0.1.0.ga2cfe08}
+%{!?_version: %global _version 4.7}
+%{!?_release: %global _release 1.0.0.0.g1c4bf42}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 %if %{RHEL8}
@@ -102,7 +102,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -110,7 +110,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -118,7 +118,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -126,14 +126,14 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
@@ -160,7 +160,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.6-1.0.1.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -308,6 +308,7 @@ install -D -m 755 source/ofed_scripts/set_irq_affinity_bynode.sh %{buildroot}/%{
 install -D -m 755 source/ofed_scripts/set_irq_affinity_cpulist.sh %{buildroot}/%{_sbindir}/set_irq_affinity_cpulist.sh
 install -D -m 755 source/ofed_scripts/sysctl_perf_tuning %{buildroot}/sbin/sysctl_perf_tuning
 install -D -m 755 source/ofed_scripts/mlnx_eswitch_set %{buildroot}/sbin/mlnx_eswitch_set
+install -D -m 755 source/ofed_scripts/mlnx_net_rules %{buildroot}/sbin/mlnx_net_rules
 install -D -m 755 source/ofed_scripts/mlnx_tune %{buildroot}/usr/sbin/mlnx_tune
 install -D -m 644 source/scripts/mlnx-en.conf %{buildroot}/etc/mlnx-en.conf
 install -D -m 755 source/scripts/mlnx-en.d %{buildroot}/etc/init.d/mlnx-en.d
@@ -401,7 +402,7 @@ fi
 /sbin/depmod -r -a %{KVERSION}
 # W/A for OEL6.7/7.x inbox modules get locked in memory
 # in dmesg we get: Module mlx4_core locked in memory until next boot
-if (grep -qiE "Oracle.*(6.[7-9]| 7)" /etc/issue /etc/*release* 2>/dev/null); then
+if (grep -qiE "Oracle.*(6.([7-9]|10)| 7)" /etc/issue /etc/*release* 2>/dev/null); then
 	/sbin/dracut --force
 fi
 
@@ -410,7 +411,7 @@ if [ $1 = 0 ]; then  # 1 : Erase, not upgrade
 	/sbin/depmod -r -a %{KVERSION}
 	# W/A for OEL6.7/7.x inbox modules get locked in memory
 	# in dmesg we get: Module mlx4_core locked in memory until next boot
-	if (grep -qiE "Oracle.*(6.[7-9]| 7)" /etc/issue /etc/*release* 2>/dev/null); then
+	if (grep -qiE "Oracle.*(6.([7-9]|10)| 7)" /etc/issue /etc/*release* 2>/dev/null); then
 		/sbin/dracut --force
 	fi
 fi

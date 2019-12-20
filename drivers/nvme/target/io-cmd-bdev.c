@@ -1,20 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * NVMe I/O command implementation.
  * Copyright (c) 2015-2016 HGST, a Western Digital Company.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 #ifdef pr_fmt
 #undef pr_fmt
 #endif
-
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/blkdev.h>
 #include <linux/module.h>
@@ -48,6 +39,66 @@ void nvmet_bdev_ns_disable(struct nvmet_ns *ns)
 	}
 }
 
+#ifdef HAVE_BLK_STATUS_T
+static u16 blk_to_nvme_status(struct nvmet_req *req, blk_status_t blk_sts)
+{
+	u16 status = NVME_SC_SUCCESS;
+
+	if (likely(blk_sts == BLK_STS_OK))
+		return status;
+	/*
+	 * Right now there exists M : 1 mapping between block layer error
+	 * to the NVMe status code (see nvme_error_status()). For consistency,
+	 * when we reverse map we use most appropriate NVMe Status code from
+	 * the group of the NVMe staus codes used in the nvme_error_status().
+	 */
+	switch (blk_sts) {
+	case BLK_STS_NOSPC:
+		status = NVME_SC_CAP_EXCEEDED | NVME_SC_DNR;
+		req->error_loc = offsetof(struct nvme_rw_command, length);
+		break;
+	case BLK_STS_TARGET:
+		status = NVME_SC_LBA_RANGE | NVME_SC_DNR;
+		req->error_loc = offsetof(struct nvme_rw_command, slba);
+		break;
+	case BLK_STS_NOTSUPP:
+		req->error_loc = offsetof(struct nvme_common_command, opcode);
+		switch (req->cmd->common.opcode) {
+		case nvme_cmd_dsm:
+		case nvme_cmd_write_zeroes:
+			status = NVME_SC_ONCS_NOT_SUPPORTED | NVME_SC_DNR;
+			break;
+		default:
+			status = NVME_SC_INVALID_OPCODE | NVME_SC_DNR;
+		}
+		break;
+	case BLK_STS_MEDIUM:
+		status = NVME_SC_ACCESS_DENIED;
+		req->error_loc = offsetof(struct nvme_rw_command, nsid);
+		break;
+	case BLK_STS_IOERR:
+		/* fallthru */
+	default:
+		status = NVME_SC_INTERNAL | NVME_SC_DNR;
+		req->error_loc = offsetof(struct nvme_common_command, opcode);
+	}
+
+	switch (req->cmd->common.opcode) {
+	case nvme_cmd_read:
+	case nvme_cmd_write:
+		req->error_slba = le64_to_cpu(req->cmd->rw.slba);
+		break;
+	case nvme_cmd_write_zeroes:
+		req->error_slba =
+			le64_to_cpu(req->cmd->write_zeroes.slba);
+		break;
+	default:
+		req->error_slba = 0;
+	}
+	return status;
+}
+#endif
+
 #ifdef HAVE_BIO_ENDIO_1_PARAM
 static void nvmet_bio_done(struct bio *bio)
 #else
@@ -56,15 +107,13 @@ static void nvmet_bio_done(struct bio *bio, int error)
 {
 	struct nvmet_req *req = bio->bi_private;
 
-	nvmet_req_complete(req,
 #ifdef HAVE_BLK_STATUS_T
-		bio->bi_status ? NVME_SC_INTERNAL | NVME_SC_DNR : 0);
+	nvmet_req_complete(req, blk_to_nvme_status(req, bio->bi_status));
 #elif defined(HAVE_STRUCT_BIO_BI_ERROR)
-		bio->bi_error ? NVME_SC_INTERNAL | NVME_SC_DNR : 0);
+	nvmet_req_complete(req, bio->bi_error ? NVME_SC_INTERNAL | NVME_SC_DNR : 0);
 #else
-		error ? NVME_SC_INTERNAL | NVME_SC_DNR : 0);
+	nvmet_req_complete(req, error ? NVME_SC_INTERNAL | NVME_SC_DNR : 0);
 #endif
-
 	if (bio != &req->b.inline_bio)
 		bio_put(bio);
 }
@@ -75,9 +124,6 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 	struct bio *bio;
 	struct scatterlist *sg;
 	sector_t sector;
-#ifdef HAVE_SUBMIT_BIO_1_PARAM
-	blk_qc_t cookie;
-#endif
 	int op, op_flags = 0, i;
 
 	if (!req->sg_cnt) {
@@ -109,9 +155,9 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 #ifdef HAVE_BIO_INIT_3_PARAMS
 		bio_init(bio, req->inline_bvec, ARRAY_SIZE(req->inline_bvec));
 #else
-	bio_init(bio);
-	bio->bi_io_vec = req->inline_bvec;
-	bio->bi_max_vecs = ARRAY_SIZE(req->inline_bvec);
+		bio_init(bio);
+		bio->bi_io_vec = req->inline_bvec;
+		bio->bi_max_vecs = ARRAY_SIZE(req->inline_bvec);
 #endif
 	} else {
 		bio = bio_alloc(GFP_KERNEL, min(sg_cnt, BIO_MAX_PAGES));
@@ -165,17 +211,10 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 	}
 
 #ifdef HAVE_SUBMIT_BIO_1_PARAM
-	cookie = submit_bio(bio);
-
-#ifdef HAVE_BLK_MQ_POLL
-	blk_mq_poll(bdev_get_queue(req->ns->bdev), cookie);
-#elif defined(HAVE_BLK_POLL)
-	blk_poll(bdev_get_queue(req->ns->bdev), cookie);
-#endif /* HAVE_BLK_MQ_POLL */
-
+	submit_bio(bio);
 #else
 	submit_bio(bio_data_dir(bio), bio);
-#endif /* HAVE_SUBMIT_BIO_1_PARAM */
+#endif
 }
 
 static void nvmet_bdev_execute_flush(struct nvmet_req *req)
@@ -216,9 +255,10 @@ u16 nvmet_bdev_flush(struct nvmet_req *req)
 	return 0;
 }
 
-static u16 nvmet_bdev_discard_range(struct nvmet_ns *ns,
+static u16 nvmet_bdev_discard_range(struct nvmet_req *req,
 		struct nvme_dsm_range *range, struct bio **bio)
 {
+	struct nvmet_ns *ns = req->ns;
 	int ret;
 
 #ifdef HAVE___BLKDEV_ISSUE_DISCARD
@@ -232,9 +272,11 @@ static u16 nvmet_bdev_discard_range(struct nvmet_ns *ns,
 			le32_to_cpu(range->nlb) << (ns->blksize_shift - 9),
 			GFP_KERNEL, 0);
 #endif
-	if (ret && ret != -EOPNOTSUPP)
-		return NVME_SC_INTERNAL | NVME_SC_DNR;
-	return 0;
+	if (ret && ret != -EOPNOTSUPP) {
+		req->error_slba = le64_to_cpu(range->slba);
+		return errno_to_nvme_status(req, ret);
+	}
+	return NVME_SC_SUCCESS;
 }
 
 static void nvmet_bdev_execute_discard(struct nvmet_req *req)
@@ -250,7 +292,7 @@ static void nvmet_bdev_execute_discard(struct nvmet_req *req)
 		if (status)
 			break;
 
-		status = nvmet_bdev_discard_range(req->ns, &range, &bio);
+		status = nvmet_bdev_discard_range(req, &range, &bio);
 		if (status)
 			break;
 	}
@@ -301,9 +343,9 @@ static void nvmet_bdev_execute_write_zeroes(struct nvmet_req *req)
 {
 	struct nvme_write_zeroes_cmd *write_zeroes = &req->cmd->write_zeroes;
 	struct bio *bio = NULL;
-	u16 status = NVME_SC_SUCCESS;
 	sector_t sector;
 	sector_t nr_sector;
+	int ret;
 
 	sector = le64_to_cpu(write_zeroes->slba) <<
 		(req->ns->blksize_shift - 9);
@@ -311,15 +353,12 @@ static void nvmet_bdev_execute_write_zeroes(struct nvmet_req *req)
 		(req->ns->blksize_shift - 9));
 
 #ifdef CONFIG_COMPAT_IS_BLKDEV_ISSUE_ZEROOUT_HAS_FLAGS
-	if (__blkdev_issue_zeroout(req->ns->bdev, sector, nr_sector,
-				GFP_KERNEL, &bio, 0))
+	ret = __blkdev_issue_zeroout(req->ns->bdev, sector, nr_sector,
+			GFP_KERNEL, &bio, 0);
 #else
 	if (__blkdev_issue_zeroout(req->ns->bdev, sector, nr_sector,
-				GFP_KERNEL, &bio, true))
-
+			GFP_KERNEL, &bio, true))
 #endif
-		status = NVME_SC_INTERNAL | NVME_SC_DNR;
-
 	if (bio) {
 		bio->bi_private = req;
 		bio->bi_end_io = nvmet_bio_done;
@@ -329,7 +368,7 @@ static void nvmet_bdev_execute_write_zeroes(struct nvmet_req *req)
 		submit_bio(bio_data_dir(bio), bio);
 #endif
 	} else {
-		nvmet_req_complete(req, status);
+		nvmet_req_complete(req, errno_to_nvme_status(req, ret));
 	}
 }
 #endif
@@ -356,11 +395,13 @@ u16 nvmet_bdev_parse_io_cmd(struct nvmet_req *req)
 #ifdef HAVE_BLKDEV_ISSUE_ZEROOUT
 	case nvme_cmd_write_zeroes:
 		req->execute = nvmet_bdev_execute_write_zeroes;
+		req->data_len = 0;
 		return 0;
 #endif
 	default:
 		pr_err("unhandled cmd %d on qid %d\n", cmd->common.opcode,
 		       req->sq->qid);
+		req->error_loc = offsetof(struct nvme_common_command, opcode);
 		return NVME_SC_INVALID_OPCODE | NVME_SC_DNR;
 	}
 }

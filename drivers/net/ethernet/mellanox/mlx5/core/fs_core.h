@@ -39,6 +39,8 @@
 #include <linux/rhashtable.h>
 #include <linux/llist.h>
 
+#define MINIFLOW_MAX_FLOWS 12
+
 /* FS_TYPE_PRIO_CHAINS is a PRIO that will have namespaces only,
  * and those are in parallel to one another when going over them to connect
  * a new flow table. Meaning the last flow table in a TYPE_PRIO prio in one
@@ -69,7 +71,7 @@ enum fs_flow_table_type {
 	FS_FT_SNIFFER_RX	= 0X5,
 	FS_FT_SNIFFER_TX	= 0X6,
 	FS_FT_RDMA_RX		= 0X7,
-	FS_FT_MAX_TYPE = FS_FT_RDMA_RX,
+	FS_FT_MAX_TYPE = FS_FT_SNIFFER_TX,
 };
 
 enum fs_flow_table_op_mod {
@@ -156,31 +158,13 @@ struct mlx5_flow_table {
 	/* FWD rules that point on this flow table */
 	struct list_head		fwd_rules;
 	u32				flags;
-	struct rhltable			fgs_hash;
+#if !defined(HAVE_RHLTABLE) && defined(HAVE_NETNS_FRAGS_RHASHTABLE)
+	struct bp_rhltable		fgs_hash;
+#else
+ 	struct rhltable			fgs_hash;
+#endif
 	struct fs_debugfs_ft		debugfs;
-};
-
-struct mlx5_fc_cache {
-	u64 packets;
-	u64 bytes;
-	u64 lastuse;
-};
-
-struct mlx5_fc {
-	struct list_head list;
-	struct llist_node addlist;
-	struct llist_node dellist;
-
-	/* last{packets,bytes} members are used when calculating the delta since
-	 * last reading
-	 */
-	u64 lastpackets;
-	u64 lastbytes;
-
-	u32 id;
-	bool aging;
-
-	struct mlx5_fc_cache cache ____cacheline_aligned_in_smp;
+	enum mlx5_flow_table_miss_action def_miss_action;
 };
 
 struct mlx5_ft_underlay_qp {
@@ -206,11 +190,14 @@ struct fs_fte {
 	u32				val[MLX5_ST_SZ_DW_MATCH_PARAM];
 	u32				dests_size;
 	u32				index;
+	struct mlx5_flow_context	flow_context;
 	struct mlx5_flow_act		action;
 	enum fs_fte_status		status;
 	struct mlx5_fc			*counter;
 	struct rhash_head		hash;
 	struct fs_debugfs_fte		debugfs;
+	int				modify_mask;
+	u32				handle;
 };
 
 /* Type of children is mlx5_flow_table/namespace */
@@ -234,6 +221,7 @@ struct mlx5_flow_namespace {
 	 */
 	struct  rw_semaphore		ns_rw_sem;
 	struct	fs_debugfs_ns		debugfs;
+	enum mlx5_flow_table_miss_action def_miss_action;
 };
 
 struct mlx5_flow_group_mask {
@@ -250,7 +238,11 @@ struct mlx5_flow_group {
 	struct ida			fte_allocator;
 	u32				id;
 	struct rhashtable		ftes_hash;
+#if !defined(HAVE_RHLTABLE) && defined(HAVE_NETNS_FRAGS_RHASHTABLE)
+	struct bp_rhlist_head		hash;
+#else
 	struct rhlist_head		hash;
+#endif
 	struct fs_debugfs_fg		debugfs;
 };
 
@@ -263,7 +255,6 @@ struct mlx5_flow_root_namespace {
 	struct mutex			chain_lock;
 	struct list_head		underlay_qpns;
 	const struct mlx5_flow_cmds	*cmds;
-	enum mlx5_flow_table_miss_action def_miss_action;
 };
 
 int mlx5_init_fc_stats(struct mlx5_core_dev *dev);
@@ -327,8 +318,7 @@ void mlx5_cleanup_fs(struct mlx5_core_dev *dev);
 	(type == FS_FT_FDB) ? MLX5_CAP_ESW_FLOWTABLE_FDB(mdev, cap) :		\
 	(type == FS_FT_SNIFFER_RX) ? MLX5_CAP_FLOWTABLE_SNIFFER_RX(mdev, cap) :		\
 	(type == FS_FT_SNIFFER_TX) ? MLX5_CAP_FLOWTABLE_SNIFFER_TX(mdev, cap) :		\
-	(type == FS_FT_RDMA_RX) ? MLX5_CAP_FLOWTABLE_RDMA_RX(mdev, cap) :		\
-	(BUILD_BUG_ON_ZERO(FS_FT_RDMA_RX != FS_FT_MAX_TYPE))\
+	(BUILD_BUG_ON_ZERO(FS_FT_SNIFFER_TX != FS_FT_MAX_TYPE))\
 	)
 
 #endif

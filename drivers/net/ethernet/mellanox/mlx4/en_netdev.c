@@ -1739,6 +1739,22 @@ out:
 	mutex_unlock(&mdev->state_lock);
 }
 
+#ifndef HAVE_NETPOLL_POLL_DEV_EXPORTED
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void mlx4_en_netpoll(struct net_device *dev)
+{
+	struct mlx4_en_priv *priv = netdev_priv(dev);
+	struct mlx4_en_cq *cq;
+	int i;
+
+	for (i = 0; i < priv->tx_ring_num[TX]; i++) {
+		cq = priv->tx_cq[TX][i];
+		napi_schedule(&cq->napi);
+	}
+}
+#endif
+#endif
+
 static int mlx4_en_set_rss_steer_rules(struct mlx4_en_priv *priv)
 {
 	u64 reg_id;
@@ -4150,6 +4166,11 @@ static struct net_device_ops mlx4_netdev_base_ops = {
 #endif
 	.ndo_vlan_rx_add_vid	= mlx4_en_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= mlx4_en_vlan_rx_kill_vid,
+#ifndef HAVE_NETPOLL_POLL_DEV_EXPORTED
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= mlx4_en_netpoll,
+#endif
+#endif
 #if (defined(HAVE_NDO_SET_FEATURES) && !defined(HAVE_NET_DEVICE_OPS_EXT))
 	.ndo_set_features	= mlx4_en_set_features,
 #endif
@@ -4163,7 +4184,7 @@ static struct net_device_ops mlx4_netdev_base_ops = {
 #if defined(HAVE_NDO_SETUP_TC_4_PARAMS) || \
     defined(HAVE_NDO_SETUP_TC_TAKES_CHAIN_INDEX) || \
     defined(HAVE_TC_FLOWER_OFFLOAD) && \
-    !defined(CONFIG_COMPAT_CLS_FLOWER_MOD)
+    !defined(CONFIG_COMPAT_CLS_FLOWER_MOD) || defined(CONFIG_COMPAT_KERNEL_4_14)
 	.ndo_setup_tc		= __mlx4_en_setup_tc,
 #else
 	.ndo_setup_tc           = mlx4_en_setup_tc,
@@ -4750,7 +4771,7 @@ int mlx4_en_init_netdev(struct mlx4_en_dev *mdev, int port,
 	dev->addr_len = ETH_ALEN;
 	mlx4_en_u64_to_mac(dev->dev_addr, mdev->dev->caps.def_mac[priv->port]);
 	if (!is_valid_ether_addr(dev->dev_addr)) {
-		en_err(priv, "Port: %d, invalid mac burned: %pM, quiting\n",
+		en_err(priv, "Port: %d, invalid mac burned: %pM, quitting\n",
 		       priv->port, dev->dev_addr);
 		err = -EINVAL;
 		goto out;
