@@ -3,8 +3,8 @@ Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx4/en_tx.c
 
 Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
 ---
- drivers/net/ethernet/mellanox/mlx4/en_tx.c | 128 ++++++++++++++++++++++++++++-
- 1 file changed, 125 insertions(+), 3 deletions(-)
+ drivers/net/ethernet/mellanox/mlx4/en_tx.c | 132 ++++++++++++++++++++-
+ 1 file changed, 129 insertions(+), 3 deletions(-)
 
 --- a/drivers/net/ethernet/mellanox/mlx4/en_tx.c
 +++ b/drivers/net/ethernet/mellanox/mlx4/en_tx.c
@@ -102,13 +102,13 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  }
  
 +#ifdef NDO_SELECT_QUEUE_HAS_3_PARMS_NO_FALLBACK
- u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
--			 struct net_device *sb_dev)
++u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
 +		       struct net_device *sb_dev)
 +
 +#elif defined(NDO_SELECT_QUEUE_HAS_ACCEL_PRIV) || defined(HAVE_SELECT_QUEUE_FALLBACK_T)
 +
-+u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
+ u16 mlx4_en_select_queue(struct net_device *dev, struct sk_buff *skb,
+-			 struct net_device *sb_dev)
 +#ifdef HAVE_SELECT_QUEUE_FALLBACK_T
 +#ifdef HAVE_SELECT_QUEUE_NET_DEVICE
 +		       struct net_device *sb_dev,
@@ -175,7 +175,21 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  	}
  }
  
-@@ -801,7 +866,11 @@ static bool mlx4_en_build_dma_wqe(struct
+@@ -789,9 +854,13 @@ static bool mlx4_en_build_dma_wqe(struct
+ 
+ 	/* Map fragments if any */
+ 	for (i_frag = shinfo->nr_frags - 1; i_frag >= 0; i_frag--) {
++#ifdef HAVE_SKB_FRAG_OFF
++		const skb_frag_t *frag = &shinfo->frags[i_frag];
++#else
+ 		const struct skb_frag_struct *frag;
+ 
+ 		frag = &shinfo->frags[i_frag];
++#endif
+ 		byte_count = skb_frag_size(frag);
+ 		dma = skb_frag_dma_map(ddev, frag,
+ 				       0, byte_count,
+@@ -801,7 +870,11 @@ static bool mlx4_en_build_dma_wqe(struct
  
  		data->addr = cpu_to_be64(dma);
  		data->lkey = mr_key;
@@ -187,7 +201,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  		data->byte_count = cpu_to_be32(byte_count);
  		--data;
  	}
-@@ -818,7 +887,11 @@ static bool mlx4_en_build_dma_wqe(struct
+@@ -818,7 +891,11 @@ static bool mlx4_en_build_dma_wqe(struct
  
  		data->addr = cpu_to_be64(dma);
  		data->lkey = mr_key;
@@ -199,7 +213,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  		data->byte_count = cpu_to_be32(byte_count);
  	}
  	/* tx completion can avoid cache line miss for common cases */
-@@ -888,9 +961,12 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -888,9 +965,12 @@ static inline netdev_tx_t __mlx4_en_xmit
  
  	bf_ok = ring->bf_enabled;
  	if (skb_vlan_tag_present(skb)) {
@@ -212,7 +226,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  		vlan_proto = be16_to_cpu(skb->vlan_proto);
  		if (vlan_proto == ETH_P_8021AD)
  			qpn_vlan.ins_vlan = MLX4_WQE_CTRL_INS_SVLAN;
-@@ -898,10 +974,19 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -898,10 +978,19 @@ static inline netdev_tx_t __mlx4_en_xmit
  			qpn_vlan.ins_vlan = MLX4_WQE_CTRL_INS_CVLAN;
  		else
  			qpn_vlan.ins_vlan = 0;
@@ -232,7 +246,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  
  	/* Track current inflight packets for performance analysis */
  	AVG_PERF_COUNTER(priv->pstats.inflight_avg,
-@@ -958,8 +1043,13 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -958,8 +1047,13 @@ static inline netdev_tx_t __mlx4_en_xmit
  	 */
  	tx_info->ts_requested = 0;
  	if (unlikely(ring->hwtstamp_tx_type == HWTSTAMP_TX_ON &&
@@ -246,7 +260,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  		tx_info->ts_requested = 1;
  	}
  
-@@ -967,11 +1057,16 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -967,11 +1061,16 @@ static inline netdev_tx_t __mlx4_en_xmit
  	 * whether LSO is used */
  	tx_desc->ctrl.srcrb_flags = priv->ctrl_flags;
  	if (likely(skb->ip_summed == CHECKSUM_PARTIAL)) {
@@ -263,7 +277,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  		ring->tx_csum++;
  	}
  
-@@ -1017,11 +1112,15 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -1017,11 +1116,15 @@ static inline netdev_tx_t __mlx4_en_xmit
  		ring->packets++;
  	}
  	ring->bytes += tx_info->nr_bytes;
@@ -279,7 +293,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  	if (skb->encapsulation) {
  		union {
  			struct iphdr *v4;
-@@ -1039,6 +1138,7 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -1039,6 +1142,7 @@ static inline netdev_tx_t __mlx4_en_xmit
  		else
  			op_own |= cpu_to_be32(MLX4_WQE_CTRL_IIP);
  	}
@@ -287,7 +301,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  
  	ring->prod += nr_txbb;
  
-@@ -1055,9 +1155,21 @@ static inline netdev_tx_t __mlx4_en_xmit
+@@ -1055,9 +1159,21 @@ static inline netdev_tx_t __mlx4_en_xmit
  		ring->queue_stopped++;
  	}
  
@@ -309,7 +323,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  
  	real_size = (real_size / 16) & 0x3f;
  
-@@ -1156,6 +1268,7 @@ void mlx4_en_init_tx_xdp_ring_descs(stru
+@@ -1156,6 +1272,7 @@ void mlx4_en_init_tx_xdp_ring_descs(stru
  	}
  }
  
@@ -317,7 +331,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  netdev_tx_t mlx4_en_xmit_frame(struct mlx4_en_rx_ring *rx_ring,
  			       struct mlx4_en_rx_alloc *frame,
  			       struct mlx4_en_priv *priv, unsigned int length,
-@@ -1198,7 +1311,11 @@ netdev_tx_t mlx4_en_xmit_frame(struct ml
+@@ -1198,7 +1315,11 @@ netdev_tx_t mlx4_en_xmit_frame(struct ml
  					 length, PCI_DMA_TODEVICE);
  
  	data->addr = cpu_to_be64(dma + frame->page_offset);
@@ -329,7 +343,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  	data->byte_count = cpu_to_be32(length);
  
  	/* tx completion can avoid cache line miss for common cases */
-@@ -1215,7 +1332,11 @@ netdev_tx_t mlx4_en_xmit_frame(struct ml
+@@ -1215,7 +1336,11 @@ netdev_tx_t mlx4_en_xmit_frame(struct ml
  	/* Ensure new descriptor hits memory
  	 * before setting ownership of this descriptor to HW
  	 */
@@ -342,7 +356,7 @@ Change-Id: I7b0e13987edd7b33e4027ecdb2d902efc0d04aea
  	tx_desc->ctrl.owner_opcode = op_own;
  	ring->xmit_more++;
  
-@@ -1229,3 +1350,4 @@ tx_drop_count:
+@@ -1229,3 +1354,4 @@ tx_drop_count:
  tx_drop:
  	return NETDEV_TX_BUSY;
  }

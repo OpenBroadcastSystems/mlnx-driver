@@ -3,8 +3,8 @@ Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/lag_mp.c
 
 Change-Id: Ia45d22b3ddef3c6b67e2fafb5b8c3e0bd9209d4b
 ---
- drivers/net/ethernet/mellanox/mlx5/core/lag_mp.c | 41 ++++++++++++++++++++++--
- 1 file changed, 39 insertions(+), 2 deletions(-)
+ .../net/ethernet/mellanox/mlx5/core/lag_mp.c  | 50 ++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 2 deletions(-)
 
 --- a/drivers/net/ethernet/mellanox/mlx5/core/lag_mp.c
 +++ b/drivers/net/ethernet/mellanox/mlx5/core/lag_mp.c
@@ -116,8 +116,29 @@ Change-Id: Ia45d22b3ddef3c6b67e2fafb5b8c3e0bd9209d4b
  			return NOTIFY_DONE;
  		}
  		fib_work = mlx5_lag_init_fib_work(ldev, event);
-@@ -314,3 +349,5 @@ void mlx5_lag_mp_cleanup(struct mlx5_lag
+@@ -296,8 +331,13 @@ int mlx5_lag_mp_init(struct mlx5_lag *ld
+ 		return 0;
+ 
+ 	mp->fib_nb.notifier_call = mlx5_lag_fib_event;
++#ifdef HAVE_REGISTER_FIB_NOTIFIER_HAS_4_PARAMS
++	err = register_fib_notifier(&init_net, &mp->fib_nb,
++				    mlx5_lag_fib_event_flush, NULL);
++#else
+ 	err = register_fib_notifier(&mp->fib_nb,
+ 				    mlx5_lag_fib_event_flush);
++#endif
+ 	if (err)
+ 		mp->fib_nb.notifier_call = NULL;
+ 
+@@ -311,6 +351,12 @@ void mlx5_lag_mp_cleanup(struct mlx5_lag
+ 	if (!mp->fib_nb.notifier_call)
+ 		return;
+ 
++#ifdef HAVE_REGISTER_FIB_NOTIFIER_HAS_4_PARAMS
++	unregister_fib_notifier(&init_net, &mp->fib_nb);
++#else
  	unregister_fib_notifier(&mp->fib_nb);
++#endif
  	mp->fib_nb.notifier_call = NULL;
  }
 +#endif /* HAVE_FIB_NH_NOTIFIER_INFO */

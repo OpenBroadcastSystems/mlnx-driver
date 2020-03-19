@@ -2310,12 +2310,13 @@ int mlx4_en_start_port(struct net_device *dev)
 	queue_work(mdev->workqueue, &priv->rx_mode_task);
 
 #ifdef HAVE_KERNEL_WITH_VXLAN_SUPPORT_ON
-	if (priv->mdev->dev->caps.tunnel_offload_mode == MLX4_TUNNEL_OFFLOAD_MODE_VXLAN)
+	if (priv->mdev->dev->caps.tunnel_offload_mode == MLX4_TUNNEL_OFFLOAD_MODE_VXLAN) {
 #if defined(HAVE_NDO_UDP_TUNNEL_ADD) || defined(HAVE_NDO_UDP_TUNNEL_ADD_EXTENDED)
 		udp_tunnel_get_rx_info(dev);
 #elif defined(HAVE_NDO_ADD_VXLAN_PORT)
 		vxlan_get_rx_port(dev);
 #endif
+	}
 #endif
 
 	priv->port_up = true;
@@ -3281,11 +3282,15 @@ int mlx4_en_try_alloc_resources(struct mlx4_en_priv *priv,
 		lockdep_is_held(&priv->mdev->state_lock));
 
 	if (xdp_prog && carry_xdp_prog) {
+#ifndef HAVE_BPF_PROG_ADD_RET_STRUCT
+		bpf_prog_add(xdp_prog, tmp->rx_ring_num);
+#else
 		xdp_prog = bpf_prog_add(xdp_prog, tmp->rx_ring_num);
 		if (IS_ERR(xdp_prog)) {
 			mlx4_en_free_resources(tmp);
 			return PTR_ERR(xdp_prog);
 		}
+#endif
 		for (i = 0; i < tmp->rx_ring_num; i++)
 			rcu_assign_pointer(tmp->rx_ring[i]->xdp_prog,
 					   xdp_prog);
@@ -4015,9 +4020,13 @@ static int mlx4_xdp_set(struct net_device *dev, struct bpf_prog *prog)
 	 */
 	if (priv->tx_ring_num[TX_XDP] == xdp_ring_num) {
 		if (prog) {
+#ifndef HAVE_BPF_PROG_ADD_RET_STRUCT
+			bpf_prog_add(prog, priv->rx_ring_num - 1);
+#else
 			prog = bpf_prog_add(prog, priv->rx_ring_num - 1);
 			if (IS_ERR(prog))
 				return PTR_ERR(prog);
+#endif
 		}
 		mutex_lock(&mdev->state_lock);
 		for (i = 0; i < priv->rx_ring_num; i++) {
@@ -4040,11 +4049,15 @@ static int mlx4_xdp_set(struct net_device *dev, struct bpf_prog *prog)
 		return -ENOMEM;
 
 	if (prog) {
+#ifndef HAVE_BPF_PROG_ADD_RET_STRUCT
+		bpf_prog_add(prog, priv->rx_ring_num - 1);
+#else
 		prog = bpf_prog_add(prog, priv->rx_ring_num - 1);
 		if (IS_ERR(prog)) {
 			err = PTR_ERR(prog);
 			goto out;
 		}
+#endif
 	}
 
 	mutex_lock(&mdev->state_lock);
@@ -4098,7 +4111,9 @@ static int mlx4_xdp_set(struct net_device *dev, struct bpf_prog *prog)
 
 unlock_out:
 	mutex_unlock(&mdev->state_lock);
+#ifdef HAVE_BPF_PROG_ADD_RET_STRUCT
 out:
+#endif
 	kfree(tmp);
 	return err;
 }

@@ -115,7 +115,11 @@ static void mlx4_crdump_collect_crspace(struct mlx4_dev *dev,
 					readl(cr_space + offset);
 
 		err = devlink_region_snapshot_create(crdump->region_crspace,
+#ifndef HAVE_DEVLINK_REGION_SNAPSHOT_CREATE_4_PARAM
 						     cr_res_size, crspace_data,
+#else
+						     crspace_data,
+#endif
 						     id, &kvfree);
 		if (err) {
 			kvfree(crspace_data);
@@ -155,7 +159,9 @@ static void mlx4_crdump_collect_fw_health(struct mlx4_dev *dev,
 					readl(health_buf_start + offset);
 
 		err = devlink_region_snapshot_create(crdump->region_fw_health,
+#ifndef HAVE_DEVLINK_REGION_SNAPSHOT_CREATE_4_PARAM
 						     HEALTH_BUFFER_SIZE,
+#endif
 						     health_data,
 						     id, &kvfree);
 		if (err) {
@@ -240,12 +246,15 @@ int mlx4_crdump_collect(struct mlx4_dev *dev)
 	}
 
 	/* Get the available snapshot ID for the dumps */
+#ifdef HAVE_DEVLINK_REGION_SNAPSHOT_EXISTS
+	id = devlink_region_snapshot_id_get(devlink);
+#else
 	id = devlink_region_shapshot_id_get(devlink);
-
+#endif
 	/* Try to capture dumps */
 	mlx4_crdump_collect_crspace(dev, cr_space, id);
 	mlx4_crdump_collect_fw_health(dev, cr_space, id);
-#endif
+#endif //HAVE_DEVLINK_PARAM_GENERIC_ID_REGION_SNAPSHOT
 	if (crdump->crspace || crdump->health)
 		mlx4_info(dev, "crdump: Crash snapshot collected to /proc/%s/%s/%s\n",
 				MLX4_CORE_PROC, CRDUMP_PROC_DIR,

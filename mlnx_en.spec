@@ -34,8 +34,15 @@
 %global POWERKVM %(if (grep -qiE "powerkvm" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global BLUENIX %(if (grep -qiE "Bluenix" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global XENSERVER65 %(if (grep -qiE "XenServer.*6\.5" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
-# Force python3 on RHEL8 and OL8:
-%global PYTHON3 %(if test `grep -E '^(ID="(rhel|ol|centos)"|VERSION="8)' /etc/os-release 2>/dev/null | wc -l` -eq 2; then echo -n '1'; else echo -n '0'; fi)
+# Force python3 on RHEL8, fedora3x and similar:
+%global RHEL8 %(if test `grep -E '^(ID="(rhel|ol|centos)"|VERSION="8)' /etc/os-release 2>/dev/null | wc -l` -eq 2; then echo -n '1'; else echo -n '0'; fi)
+%global FEDORA3X %{!?fedora:0}%{?fedora:%(if [ %{fedora} -ge 30 ]; then echo 1; else echo 0; fi)}
+%global PYTHON3 %{RHEL8} || %{FEDORA3X}
+
+# Workaround: To be removed when mlnx_tune has python3 support:
+%global REMOVE_MLNX_TUNE  (!%{KMP}) && %{RHEL8}
+
+%global IS_RHEL_VENDOR "%{_vendor}" == "redhat" || ("%{_vendor}" == "bclinux")
 
 %{!?MEMTRACK: %global MEMTRACK 0}
 %{!?MLX4: %global MLX4 1}
@@ -62,7 +69,7 @@
 %endif
 %endif
 
-%if "%{_vendor}" == "redhat"
+%if %{IS_RHEL_VENDOR}
 %if %{!?KVER:1}%{?KVER:0}
 %define flav ""
 %endif
@@ -74,8 +81,8 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 4.7}
-%{!?_release: %global _release 3.2.9.0.g457f064}
+%{!?_version: %global _version 5.0}
+%{!?_release: %global _release 1.0.0.0.0.g34c46d3}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 %if %{PYTHON3}
@@ -103,7 +110,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -111,7 +118,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -119,7 +126,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -127,14 +134,14 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
@@ -161,7 +168,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -199,7 +206,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mln
 %debug_package
 %endif
 
-%if "%{_vendor}" == "redhat"
+%if %{IS_RHEL_VENDOR}
 %global __find_requires %{nil}
 %endif
 
@@ -209,7 +216,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mln
 %endif
 
 # set modules dir
-%if "%{_vendor}" == "redhat"
+%if %{IS_RHEL_VENDOR}
 %if 0%{?fedora}
 %global install_mod_dir updates
 %else
@@ -284,7 +291,7 @@ done
 # Set the module(s) to be executable, so that they will be stripped when packaged.
 find %{buildroot} \( -type f -name '*.ko' -o -name '*ko.gz' \) -exec %{__chmod} u+x \{\} \;
 
-%if "%{_vendor}" == "redhat"
+%if %{IS_RHEL_VENDOR}
 %if ! 0%{?fedora}
 %{__install} -d %{buildroot}%{_sysconfdir}/depmod.d/
 for module in `find %{buildroot}/ -name '*.ko' -o -name '*.ko.gz' | sort`
@@ -310,7 +317,9 @@ install -D -m 755 source/ofed_scripts/set_irq_affinity_cpulist.sh %{buildroot}/%
 install -D -m 755 source/ofed_scripts/sysctl_perf_tuning %{buildroot}/sbin/sysctl_perf_tuning
 install -D -m 755 source/ofed_scripts/mlnx_eswitch_set %{buildroot}/sbin/mlnx_eswitch_set
 install -D -m 755 source/ofed_scripts/mlnx_net_rules %{buildroot}/sbin/mlnx_net_rules
+%if %{REMOVE_MLNX_TUNE}
 install -D -m 755 source/ofed_scripts/mlnx_tune %{buildroot}/usr/sbin/mlnx_tune
+%endif
 install -D -m 644 source/scripts/mlnx-en.conf %{buildroot}/etc/mlnx-en.conf
 install -D -m 755 source/scripts/mlnx-en.d %{buildroot}/etc/init.d/mlnx-en.d
 install -D -m 644 source/ofed_scripts/mlnx-eswitch.conf   %{buildroot}/etc/modprobe.d/mlnx-eswitch.conf
@@ -497,7 +506,7 @@ rm -rf %{buildroot}
 %if "%{KMP}" != "1"
 %files -n mlnx_en
 /lib/modules/%{KVERSION}/%{install_mod_dir}/
-%if "%{_vendor}" == "redhat"
+%if %{IS_RHEL_VENDOR}
 %if ! 0%{?fedora}
 %config(noreplace) %{_sysconfdir}/depmod.d/%{name}-*.conf
 %endif

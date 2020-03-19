@@ -150,14 +150,12 @@ static void mlx5e_xdp_mpwqe_session_start(struct mlx5e_xdpsq *sq)
 	u8  wqebbs;
 	u16 pi;
 
-	mlx5e_xdpsq_fetch_wqe(sq, &session->wqe);
+	session->wqe = mlx5e_xdpsq_fetch_wqe(sq, &pi);
 
 	prefetchw(session->wqe->data);
 	session->ds_count  = MLX5E_XDP_TX_EMPTY_DS_COUNT;
 	session->pkt_count = 0;
 	session->complete  = 0;
-
-	pi = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
 
 /* The mult of MLX5_SEND_WQE_MAX_WQEBBS * MLX5_SEND_WQEBB_NUM_DS
  * (16 * 4 == 64) does not fit in the 6-bit DS field of Ctrl Segment.
@@ -318,10 +316,10 @@ static void mlx5e_free_xdpsq_desc(struct mlx5e_xdpsq *sq,
 			dma_unmap_single(sq->pdev, xdpi.dma_addr,
 					 xdpi.xdpf->len, DMA_TO_DEVICE);
 #ifdef HAVE_XDP_FRAME
-       		xdp_return_frame(xdpi.xdpf);
+			xdp_return_frame(xdpi.xdpf);
 #else
-				/* Assumes order0 page*/
-				put_page(virt_to_page(xdpi.xdpf->data));
+			/* Assumes order0 page*/
+			put_page(virt_to_page(xdpi.xdpf->data));
 #endif
 		}
 	}
@@ -465,9 +463,9 @@ int mlx5e_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
 
 		if (unlikely(!sq->xmit_xdp_frame(sq, &xdpi))) {
 #ifdef HAVE_XDP_FRAME
-       		dma_unmap_single(sq->pdev, xdpi.dma_addr,
-       				 xdpf->len, DMA_TO_DEVICE);
-       		xdp_return_frame_rx_napi(xdpf);
+			dma_unmap_single(sq->pdev, xdpi.dma_addr,
+					 xdpf->len, DMA_TO_DEVICE);
+			xdp_return_frame_rx_napi(xdpf);
 #else
 			/* Assumes order0 page*/
 			put_page(virt_to_page(xdpf->data));
@@ -492,7 +490,8 @@ int mlx5e_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
 	struct mlx5e_xdpsq *sq;
 	int sq_num;
 
-	if (unlikely(!test_bit(MLX5E_STATE_OPENED, &priv->state)))
+	/* this flag is sufficient, no need to test internal sq state */
+	if (unlikely(!mlx5e_xdp_tx_is_enabled(priv)))
 		return -ENETDOWN;
 
 	sq_num = smp_processor_id();
@@ -501,9 +500,6 @@ int mlx5e_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
 		return -ENXIO;
 
 	sq = &priv->channels.c[sq_num]->xdpsq;
-
-	if (unlikely(!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state)))
-		return -ENETDOWN;
 
 	xdpi.xdpf = convert_to_xdp_frame(xdp);
 	if (unlikely(!xdpi.xdpf))
@@ -514,7 +510,7 @@ int mlx5e_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp)
 	if (unlikely(dma_mapping_error(sq->pdev, xdpi.dma_addr)))
 		return -ENOSPC;
 
-	if (unlikely(!mlx5e_xmit_xdp_frame(sq, &xdpi)))
+	if (unlikely(!sq->xmit_xdp_frame(sq, &xdpi)))
 		return -ENOSPC;
 
 	return 0;
@@ -526,7 +522,8 @@ void mlx5e_xdp_flush(struct net_device *dev)
 	struct mlx5e_xdpsq *sq;
 	int sq_num;
 
-	if (unlikely(!test_bit(MLX5E_STATE_OPENED, &priv->state)))
+	/* this flag is sufficient, no need to test internal sq state */
+	if (unlikely(!mlx5e_xdp_tx_is_enabled(priv)))
 		return;
 
 	sq_num = smp_processor_id();
@@ -536,9 +533,8 @@ void mlx5e_xdp_flush(struct net_device *dev)
 
 	sq = &priv->channels.c[sq_num]->xdpsq;
 
-	if (unlikely(!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state)))
-		return;
-
+	if (sq->mpwqe.wqe)
+		mlx5e_xdp_mpwqe_complete(sq);
 	mlx5e_xmit_xdp_doorbell(sq);
 }
 #endif

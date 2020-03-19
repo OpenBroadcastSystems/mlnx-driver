@@ -45,11 +45,15 @@ configure_if()
 			;;
 	esac
 
+	if [ `cat /sys/class/net/$net_if/operstate` == "up" ]; then
+		return
+	fi
+
 	logger -i "$APP: Bringing up interface $1"
-	/sbin/ip link set dev $1 up
 	if [ "$1" != "tmfifo_net0" ]; then
 		/sbin/ethtool -L $1 combined 4
 	fi
+	/sbin/ip link set dev $1 up
 }
 
 if [ $is_bf -eq 1 ]; then

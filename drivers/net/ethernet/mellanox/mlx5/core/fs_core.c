@@ -99,8 +99,8 @@
 #define ETHTOOL_PRIO_NUM_LEVELS 1
 #define ETHTOOL_NUM_PRIOS 11
 #define ETHTOOL_MIN_LEVEL (KERNEL_MIN_LEVEL + ETHTOOL_NUM_PRIOS)
-/* Vlan, mac, ttc, inner ttc, aRFS */
-#define KERNEL_NIC_PRIO_NUM_LEVELS 5
+/* Vlan, mac, ttc, accel(2), inner ttc, aRFS */
+#define KERNEL_NIC_PRIO_NUM_LEVELS 7
 #define KERNEL_NIC_NUM_PRIOS 1
 /* One more level for tc */
 #define KERNEL_MIN_LEVEL (KERNEL_NIC_PRIO_NUM_LEVELS + 1)
@@ -119,6 +119,10 @@
 #define LAG_PRIO_NUM_LEVELS 1
 #define LAG_NUM_PRIOS 1
 #define LAG_MIN_LEVEL (OFFLOADS_MIN_LEVEL + 1)
+
+#define KERNEL_TX_IPSEC_NUM_PRIOS 1
+#define KERNEL_TX_IPSEC_NUM_LEVELS 1
+#define KERNEL_TX_MIN_LEVEL KERNEL_TX_IPSEC_NUM_LEVELS
 
 struct node_caps {
 	size_t	arr_sz;
@@ -176,13 +180,25 @@ static struct init_tree_node {
 
 static struct init_tree_node egress_root_fs = {
 	.type = FS_TYPE_NAMESPACE,
+#ifdef CONFIG_MLX5_IPSEC
+	.ar_size = 2,
+#else
 	.ar_size = 1,
+#endif
 	.children = (struct init_tree_node[]) {
 		ADD_PRIO("egress_bypass", 0, MLX5_BY_PASS_NUM_PRIOS, 0,
 			 FS_CHAINING_CAPS_EGRESS,
 			 ADD_NS("egress_bypass_ns", MLX5_FLOW_TABLE_MISS_ACTION_DEF,
 				ADD_MULTIPLE_PRIO(MLX5_BY_PASS_NUM_PRIOS,
 						  BY_PASS_PRIO_NUM_LEVELS))),
+#ifdef CONFIG_MLX5_IPSEC
+		/*TBD: fix this to mach the ofed ADD_PRIO */
+		ADD_PRIO("egress", 0, KERNEL_TX_MIN_LEVEL, 0,
+			 FS_CHAINING_CAPS_EGRESS,
+			 ADD_NS("egress_ns", MLX5_FLOW_TABLE_MISS_ACTION_DEF,
+				ADD_MULTIPLE_PRIO(KERNEL_TX_IPSEC_NUM_PRIOS,
+						  KERNEL_TX_IPSEC_NUM_LEVELS))),
+#endif
 	}
 };
 
@@ -213,7 +229,11 @@ enum fs_i_lock_class {
 };
 
 static const struct rhashtable_params rhash_fte = {
+#ifndef FIELD_SIZEOF
+	.key_len = sizeof_field(struct fs_fte, val),
+#else
 	.key_len = FIELD_SIZEOF(struct fs_fte, val),
+#endif
 	.key_offset = offsetof(struct fs_fte, val),
 	.head_offset = offsetof(struct fs_fte, hash),
 	.automatic_shrinking = true,
@@ -225,7 +245,11 @@ static const struct bp_rhashtable_params rhash_fg = {
 #else
 static const struct rhashtable_params rhash_fg = {
 #endif
+#ifndef FIELD_SIZEOF
+	.key_len = sizeof_field(struct mlx5_flow_group, mask),
+#else
 	.key_len = FIELD_SIZEOF(struct mlx5_flow_group, mask),
+#endif
 	.key_offset = offsetof(struct mlx5_flow_group, mask),
 	.head_offset = offsetof(struct mlx5_flow_group, hash),
 	.automatic_shrinking = true,
@@ -1513,7 +1537,8 @@ static bool mlx5_flow_dests_cmp(struct mlx5_flow_destination *d1,
 		     ((d1->vport.flags & MLX5_FLOW_DEST_VPORT_VHCA_ID) ?
 		      (d1->vport.vhca_id == d2->vport.vhca_id) : true) &&
 		     ((d1->vport.flags & MLX5_FLOW_DEST_VPORT_REFORMAT_ID) ?
-		      (d1->vport.reformat_id == d2->vport.reformat_id) : true)) ||
+		      (d1->vport.pkt_reformat->id ==
+		       d2->vport.pkt_reformat->id) : true)) ||
 		    (d1->type == MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE &&
 		     d1->ft == d2->ft) ||
 		    (d1->type == MLX5_FLOW_DESTINATION_TYPE_TIR &&
@@ -1741,16 +1766,16 @@ struct match_list_head {
 	struct match_list first;
 };
 
-static void free_match_list(struct match_list_head *head)
+static void free_match_list(struct match_list_head *head, bool ft_locked)
 {
 	if (!list_empty(&head->list)) {
 		struct match_list *iter, *match_tmp;
 
 		list_del(&head->first.list);
-		tree_put_node(&head->first.g->node, false);
+		tree_put_node(&head->first.g->node, ft_locked);
 		list_for_each_entry_safe(iter, match_tmp, &head->list,
 					 list) {
-			tree_put_node(&iter->g->node, false);
+			tree_put_node(&iter->g->node, ft_locked);
 			list_del(&iter->list);
 			kfree(iter);
 		}
@@ -1759,7 +1784,8 @@ static void free_match_list(struct match_list_head *head)
 
 static int build_match_list(struct match_list_head *match_head,
 			    struct mlx5_flow_table *ft,
-			    struct mlx5_flow_spec *spec)
+			    struct mlx5_flow_spec *spec,
+			    bool ft_locked)
 {
 #if !defined(HAVE_RHLTABLE) && defined(HAVE_NETNS_FRAGS_RHASHTABLE)
 	struct bp_rhlist_head *tmp, *list;
@@ -1794,7 +1820,7 @@ static int build_match_list(struct match_list_head *match_head,
 
 		curr_match = kmalloc(sizeof(*curr_match), GFP_ATOMIC);
 		if (!curr_match) {
-			free_match_list(match_head);
+			free_match_list(match_head, ft_locked);
 			err = -ENOMEM;
 			goto out;
 		}
@@ -2002,7 +2028,7 @@ search_again_locked:
 	version = atomic_read(&ft->node.version);
 
 	/* Collect all fgs which has a matching match_criteria */
-	err = build_match_list(&match_head, ft, spec);
+	err = build_match_list(&match_head, ft, spec, take_write);
 	if (!take_write) {
 		up_read_ref_node(&ft->node);
 	} else {
@@ -2015,7 +2041,7 @@ search_again_locked:
 
 	rule = try_add_to_existing_fg(ft, &match_head.list, spec, flow_act, dest,
 				      dest_num, version);
-	free_match_list(&match_head);
+	free_match_list(&match_head, take_write);
 	if (!IS_ERR(rule) ||
 	    (PTR_ERR(rule) != -ENOENT && PTR_ERR(rule) != -EAGAIN)) {
 		if (take_write)
@@ -2355,8 +2381,10 @@ struct mlx5_flow_namespace *mlx5_get_flow_namespace(struct mlx5_core_dev *dev,
 		break;
 	}
 
-	if (type == MLX5_FLOW_NAMESPACE_EGRESS) {
+	if (type == MLX5_FLOW_NAMESPACE_EGRESS ||
+	    type == MLX5_FLOW_NAMESPACE_EGRESS_KERNEL) {
 		root_ns = steering->egress_root_ns;
+		prio = type - MLX5_FLOW_NAMESPACE_EGRESS;
 	} else if (type == MLX5_FLOW_NAMESPACE_RDMA_RX) {
 		root_ns = steering->rdma_rx_root_ns;
 		prio = RDMA_RX_BYPASS_PRIO;
@@ -2589,7 +2617,7 @@ static struct mlx5_flow_root_namespace
 	struct mlx5_flow_root_namespace *root_ns;
 	struct mlx5_flow_namespace *ns;
 
-	if (mlx5_accel_ipsec_device_caps(steering->dev) & MLX5_ACCEL_IPSEC_CAP_DEVICE &&
+	if (mlx5_fpga_ipsec_device_caps(steering->dev) & MLX5_ACCEL_IPSEC_CAP_DEVICE &&
 	    (table_type == FS_FT_NIC_RX || table_type == FS_FT_NIC_TX))
 		cmds = mlx5_fs_cmd_get_default_ipsec_fpga_cmds(table_type);
 
@@ -3369,4 +3397,171 @@ void mlx5_get_rule_flow_spec(struct mlx5_flow_spec *flow_spec,
 	memcpy(flow_spec->match_criteria, fg->mask.match_criteria,
 	       sizeof(fg->mask.match_criteria));
 	flow_spec->match_criteria_enable = fg->mask.match_criteria_enable;
+}
+
+static struct mlx5_flow_root_namespace
+*get_root_namespace(struct mlx5_core_dev *dev, enum mlx5_flow_namespace_type ns_type)
+{
+	struct mlx5_flow_namespace *ns;
+
+	if (ns_type == MLX5_FLOW_NAMESPACE_ESW_EGRESS ||
+	    ns_type == MLX5_FLOW_NAMESPACE_ESW_INGRESS)
+		ns = mlx5_get_flow_vport_acl_namespace(dev, ns_type, 0);
+	else
+		ns = mlx5_get_flow_namespace(dev, ns_type);
+	if (!ns)
+		return NULL;
+
+	return find_root(&ns->node);
+}
+
+struct mlx5_modify_hdr *mlx5_modify_header_alloc(struct mlx5_core_dev *dev,
+						 u8 ns_type, u8 num_actions,
+						 void *modify_actions)
+{
+	struct mlx5_flow_root_namespace *root;
+	struct mlx5_modify_hdr *modify_hdr;
+	int err;
+
+	root = get_root_namespace(dev, ns_type);
+	if (!root)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	modify_hdr = kzalloc(sizeof(*modify_hdr), GFP_KERNEL);
+	if (!modify_hdr)
+		return ERR_PTR(-ENOMEM);
+
+	modify_hdr->ns_type = ns_type;
+	err = root->cmds->modify_header_alloc(root, ns_type, num_actions,
+					      modify_actions, modify_hdr);
+	if (err) {
+		kfree(modify_hdr);
+		return ERR_PTR(err);
+	}
+
+	return modify_hdr;
+}
+EXPORT_SYMBOL(mlx5_modify_header_alloc);
+
+void mlx5_modify_header_dealloc(struct mlx5_core_dev *dev,
+				struct mlx5_modify_hdr *modify_hdr)
+{
+	struct mlx5_flow_root_namespace *root;
+
+	root = get_root_namespace(dev, modify_hdr->ns_type);
+	if (WARN_ON(!root))
+		return;
+	root->cmds->modify_header_dealloc(root, modify_hdr);
+	kfree(modify_hdr);
+}
+EXPORT_SYMBOL(mlx5_modify_header_dealloc);
+
+struct mlx5_pkt_reformat *mlx5_packet_reformat_alloc(struct mlx5_core_dev *dev,
+						     int reformat_type,
+						     size_t size,
+						     void *reformat_data,
+						     enum mlx5_flow_namespace_type ns_type)
+{
+	struct mlx5_pkt_reformat *pkt_reformat;
+	struct mlx5_flow_root_namespace *root;
+	int err;
+
+	root = get_root_namespace(dev, ns_type);
+	if (!root)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	pkt_reformat = kzalloc(sizeof(*pkt_reformat), GFP_KERNEL);
+	if (!pkt_reformat)
+		return ERR_PTR(-ENOMEM);
+
+	pkt_reformat->ns_type = ns_type;
+	pkt_reformat->reformat_type = reformat_type;
+	err = root->cmds->packet_reformat_alloc(root, reformat_type, size,
+						reformat_data, ns_type,
+						pkt_reformat);
+	if (err) {
+		kfree(pkt_reformat);
+		return ERR_PTR(err);
+	}
+
+	return pkt_reformat;
+}
+EXPORT_SYMBOL(mlx5_packet_reformat_alloc);
+
+void mlx5_packet_reformat_dealloc(struct mlx5_core_dev *dev,
+				  struct mlx5_pkt_reformat *pkt_reformat)
+{
+	struct mlx5_flow_root_namespace *root;
+
+	root = get_root_namespace(dev, pkt_reformat->ns_type);
+	if (WARN_ON(!root))
+		return;
+	root->cmds->packet_reformat_dealloc(root, pkt_reformat);
+	kfree(pkt_reformat);
+}
+EXPORT_SYMBOL(mlx5_packet_reformat_dealloc);
+
+int mlx5_flow_namespace_set_peer(struct mlx5_flow_root_namespace *ns,
+				 struct mlx5_flow_root_namespace *peer_ns)
+{
+	if (peer_ns && ns->mode != peer_ns->mode) {
+		mlx5_core_err(ns->dev,
+			      "Can't peer namespace of different steering mode\n");
+		return -EINVAL;
+	}
+
+	return ns->cmds->set_peer(ns, peer_ns);
+}
+
+/* This function should be called only at init stage of the namespace.
+ * It is not safe to call this function while steering operations
+ * are executed in the namespace.
+ */
+int mlx5_flow_namespace_set_mode(struct mlx5_flow_namespace *ns,
+				 enum mlx5_flow_steering_mode mode)
+{
+	struct mlx5_flow_root_namespace *root;
+	const struct mlx5_flow_cmds *cmds;
+	int err;
+
+	root = find_root(&ns->node);
+	if (&root->ns != ns)
+	/* Can't set cmds to non root namespace */
+		return -EINVAL;
+
+	if (root->table_type != FS_FT_FDB)
+		return -EOPNOTSUPP;
+
+	if (root->mode == mode)
+		return 0;
+
+	if (mode == MLX5_FLOW_STEERING_MODE_SMFS)
+		cmds = mlx5_fs_cmd_get_dr_cmds();
+	else
+		cmds = mlx5_fs_cmd_get_fw_cmds();
+	if (!cmds)
+		return -EOPNOTSUPP;
+
+	err = cmds->create_ns(root);
+	if (err) {
+		mlx5_core_err(root->dev, "Failed to create flow namespace (%d)\n",
+			      err);
+		return err;
+	}
+
+	root->cmds->destroy_ns(root);
+	root->cmds = cmds;
+	root->mode = mode;
+
+	return 0;
+}
+
+int mlx5_flow_vport_enable(struct mlx5_flow_root_namespace *root, int vport)
+{
+	return root->cmds->vport_enable(root, vport);
+}
+
+void mlx5_flow_vport_disable(struct mlx5_flow_root_namespace *root, int vport)
+{
+	root->cmds->vport_disable(root, vport);
 }

@@ -37,7 +37,7 @@ MLNX_EN_PATCH_PARAMS=
 kernelver=${kernelver:-`uname -r`}
 kernel_source_dir=${kernel_source_dir:-"/lib/modules/$kernelver/build"}
 PACKAGE_NAME=${PACKAGE_NAME:-"mlnx-en"}
-PACKAGE_VERSION=${PACKAGE_VERSION:-"4.7"}
+PACKAGE_VERSION=${PACKAGE_VERSION:-"5.0"}
 
 echo STRIP_MODS=\${STRIP_MODS:-"yes"}
 echo kernelver=\${kernelver:-\$\(uname -r\)}

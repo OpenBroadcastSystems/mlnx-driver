@@ -3,8 +3,8 @@ Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/meddev/sf.c
 
 Change-Id: I1c1f92939d399602626b6604c9aea148e330fc05
 ---
- .../net/ethernet/mellanox/mlx5/core/meddev/sf.c    | 84 +++++++++++++++++++---
- 1 file changed, 76 insertions(+), 8 deletions(-)
+ .../net/ethernet/mellanox/mlx5/core/meddev/sf.c    | 88 ++++++++++++++++++++--
+ 1 file changed, 80 insertions(+), 8 deletions(-)
 
 --- a/drivers/net/ethernet/mellanox/mlx5/core/meddev/sf.c
 +++ b/drivers/net/ethernet/mellanox/mlx5/core/meddev/sf.c
@@ -133,7 +133,15 @@ Change-Id: I1c1f92939d399602626b6604c9aea148e330fc05
  {
  	return dma_map_resource(dev->parent, phys_addr, size, dir, attrs);
  }
-@@ -327,6 +373,7 @@ mlx5_sf_dma_unmap_resource(struct device
+@@ -323,10 +369,15 @@ mlx5_sf_dma_map_resource(struct device *
+ static void
+ mlx5_sf_dma_unmap_resource(struct device *dev, dma_addr_t dma_handle,
+ 			   size_t size, enum dma_data_direction dir,
++#ifdef HAVE_STRUCT_DMA_ATTRS
++			   struct dma_attrs *attrs)
++#else
+ 			   unsigned long attrs)
++#endif
  {
  	dma_unmap_resource(dev->parent, dma_handle, size, dir, attrs);
  }
@@ -141,7 +149,7 @@ Change-Id: I1c1f92939d399602626b6604c9aea148e330fc05
  
  static void
  mlx5_sf_dma_sync_single_for_cpu(struct device *dev,
-@@ -360,6 +407,7 @@ mlx5_sf_dma_sync_sg_for_device(struct de
+@@ -360,6 +411,7 @@ mlx5_sf_dma_sync_sg_for_device(struct de
  	dma_sync_sg_for_device(dev->parent, sg, nents, dir);
  }
  
@@ -149,7 +157,7 @@ Change-Id: I1c1f92939d399602626b6604c9aea148e330fc05
  static void
  mlx5_sf_dma_cache_sync(struct device *dev, void *vaddr, size_t size,
  		       enum dma_data_direction dir)
-@@ -367,7 +415,13 @@ mlx5_sf_dma_cache_sync(struct device *de
+@@ -367,7 +419,13 @@ mlx5_sf_dma_cache_sync(struct device *de
  	dma_cache_sync(dev->parent, vaddr, size, dir);
  }
  
@@ -163,7 +171,7 @@ Change-Id: I1c1f92939d399602626b6604c9aea148e330fc05
  	.alloc = mlx5_sf_dma_alloc,
  	.free = mlx5_sf_dma_free,
  	.mmap = mlx5_sf_dma_mmap,
-@@ -376,20 +430,32 @@ static const struct dma_map_ops mlx5_sf_
+@@ -376,20 +434,32 @@ static const struct dma_map_ops mlx5_sf_
  	.unmap_page = mlx5_sf_dma_unmap_page,
  	.map_sg = mlx5_sf_dma_map_sg,
  	.unmap_sg = mlx5_sf_dma_unmap_sg,
@@ -196,7 +204,7 @@ Change-Id: I1c1f92939d399602626b6604c9aea148e330fc05
  	dev->dma_mask = pdev->dev.dma_mask;
  	dev->dma_parms = pdev->dev.dma_parms;
  	dma_set_coherent_mask(dev, pdev->dev.coherent_dma_mask);
-@@ -471,8 +537,10 @@ struct net_device *mlx5_sf_get_netdev(st
+@@ -471,8 +541,10 @@ struct net_device *mlx5_sf_get_netdev(st
  
  	vport_num = mlx5_sf_hw_id(parent_dev, sf->idx);
  

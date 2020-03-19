@@ -52,6 +52,7 @@
 #include "fs_core.h"
 #include "ecpf.h"
 #include "lib/port_tun.h"
+#include "lib/mlx5.h"
 #ifdef HAVE_TC_FLOWER_OFFLOAD
 #include "miniflow.h"
 #endif
@@ -221,6 +222,28 @@ static int mlx5e_rep_set_channels(struct net_device *dev,
 }
 #endif
 
+void mlx5e_replace_rep_vport_rx_rule_metadata(const struct net_device *dev)
+{
+	struct mlx5e_priv *priv = netdev_priv(dev);
+	struct mlx5e_rep_priv *rpriv = priv->ppriv;
+	struct mlx5_flow_handle *flow_rule;
+	struct mlx5_flow_destination dest;
+
+	ASSERT_RTNL();
+
+	dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
+	dest.tir_num = priv->direct_tir[0].tirn;
+
+	flow_rule = mlx5_eswitch_create_vport_rx_rule(priv->mdev->priv.eswitch,
+						      rpriv->rep->vport,
+						      &dest);
+	if (IS_ERR(flow_rule))
+		return;
+
+	mlx5_del_flow_rules(rpriv->vport_rx_rule);
+	rpriv->vport_rx_rule = flow_rule;
+}
+
 static int mlx5e_rep_get_coalesce(struct net_device *netdev,
 				  struct ethtool_coalesce *coal)
 {
@@ -300,7 +323,8 @@ static const struct ethtool_ops_ext mlx5e_rep_ethtool_ops_ext = {
 };
 #endif
 
-#if defined(HAVE_DEVLINK_HEALTH_REPORT) || defined(HAVE_SWITCHDEV_OPS) || defined(HAVE_SWITCHDEV_H_COMPAT)
+#if defined(HAVE_NDO_GET_PORT_PARENT_ID) || \
+	defined(HAVE_SWITCHDEV_OPS) || defined(HAVE_SWITCHDEV_H_COMPAT)
 int mlx5e_rep_get_port_parent_id(struct net_device *dev,
 				 struct netdev_phys_item_id *ppid)
 {
@@ -766,15 +790,13 @@ mlx5e_rep_indr_setup_tc_block(struct net_device *netdev,
 		if (err) {
 			list_del(&indr_priv->list);
 			kfree(indr_priv);
-#ifdef HAVE_FLOW_CLS_OFFLOAD
 			return err;
-#endif
 		}
 #ifdef HAVE_FLOW_CLS_OFFLOAD
 		flow_block_cb_add(block_cb, f);
 		list_add_tail(&block_cb->driver_list, &mlx5e_block_cb_list);
 #endif
-		return err;
+		return 0;
 	case TC_BLOCK_UNBIND:
 		indr_priv = mlx5e_rep_indr_block_priv_lookup(rpriv, netdev);
 		if (!indr_priv)
@@ -788,7 +810,7 @@ mlx5e_rep_indr_setup_tc_block(struct net_device *netdev,
                       return -ENOENT;
 
               flow_block_cb_remove(block_cb, f);
-              list_del(&indr_priv->list);
+		list_del(&block_cb->driver_list);
 #else
 		tcf_block_cb_unregister(f->block,
 					mlx5e_rep_indr_setup_block_cb,
@@ -803,21 +825,15 @@ mlx5e_rep_indr_setup_tc_block(struct net_device *netdev,
 	}
 	return 0;
 }
-#endif
-#endif
 
 static
 int mlx5e_rep_indr_setup_tc_cb(struct net_device *netdev, void *cb_priv,
 			       enum tc_setup_type type, void *type_data)
 {
 	switch (type) {
-#ifdef CONFIG_MLX5_ESWITCH
-#ifdef HAVE_TC_BLOCK_OFFLOAD
 	case TC_SETUP_BLOCK:
 		return mlx5e_rep_indr_setup_tc_block(netdev, cb_priv,
 						      type_data);
-#endif
-#endif
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -851,12 +867,14 @@ static void mlx5e_rep_changelowerstate_event(struct net_device *netdev, void *pt
 {
 	struct netdev_notifier_changelowerstate_info *info;
 	struct netdev_lag_lower_state_info *lag_info;
-	struct net_device *lag_dev, *dev;
+	struct net_device *lag_dev;
 	struct mlx5e_rep_priv *rpriv;
-	u16 acl_vport, fwd_vport;
+	u16 fwd_vport;
 	struct mlx5e_priv *priv;
 #ifdef HAVE_NETDEV_FOR_EACH_LOWER_DEV
 	struct list_head *iter;
+	struct net_device *dev;
+	u16 acl_vport; 
 #endif
 
 	/* A given netdev is not a representor or not a slave of LAG configuration */
@@ -969,6 +987,8 @@ static int mlx5e_nic_rep_netdevice_event(struct notifier_block *nb,
 	}
 	return NOTIFY_OK;
 }
+#endif
+#endif
 
 static void
 mlx5e_rep_queue_neigh_update_work(struct mlx5e_priv *priv,
@@ -1108,10 +1128,12 @@ static int mlx5e_rep_neigh_init(struct mlx5e_rep_priv *rpriv)
 			  mlx5e_rep_neigh_stats_work);
 	mlx5e_rep_neigh_update_init_interval(rpriv);
 
+#ifndef HAVE_MINIFLOW
 	rpriv->neigh_update.netevent_nb.notifier_call = mlx5e_rep_netevent_event;
 	err = register_netevent_notifier(&rpriv->neigh_update.netevent_nb);
 	if (err)
 		goto out_err;
+#endif
 	return 0;
 
 out_err:
@@ -1126,8 +1148,9 @@ static void mlx5e_rep_neigh_cleanup(struct mlx5e_rep_priv *rpriv)
 #ifdef HAVE_TCF_TUNNEL_INFO
 	struct mlx5e_priv *priv = netdev_priv(rpriv->netdev);
 
+#ifndef HAVE_MINIFLOW
 	unregister_netevent_notifier(&neigh_update->netevent_nb);
-
+#endif
 	flush_workqueue(priv->wq); /* flush neigh update works */
 
 	cancel_delayed_work_sync(&rpriv->neigh_update.neigh_stats_work);
@@ -1384,7 +1407,6 @@ mlx5e_rep_setup_tc_cls_flower(struct net_device *dev,
 #if !defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE) && !defined(HAVE_NDO_SETUP_TC_RH_EXTENDED)
 	struct tc_cls_flower_offload *cls_flower = tc->cls_flower;
 #endif
-	int err;
 
 #ifndef HAVE_TC_CLS_CAN_OFFLOAD_AND_CHAIN0
 #ifdef HAVE_TC_BLOCK_OFFLOAD
@@ -1416,6 +1438,8 @@ mlx5e_rep_setup_tc_cls_flower(struct net_device *dev,
 		struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 		struct mlx5e_rep_priv * uplink_rpriv = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
 		struct net_device *uplink_dev = uplink_rpriv->netdev;
+		int err;
+
 		flags = (flags & (~MLX5_TC_FLAG(INGRESS))) | MLX5_TC_FLAG(EGRESS);
 
 		if (uplink_dev != dev) {
@@ -1442,18 +1466,15 @@ mlx5e_rep_setup_tc_cls_flower(struct net_device *dev,
 
 	switch (cls_flower->command) {
 	case TC_CLSFLOWER_REPLACE:
-		err = mlx5e_configure_flower(priv->netdev, priv, cls_flower,
+		return mlx5e_configure_flower(priv->netdev, priv, cls_flower,
 					      flags);
-		return err;
 	case TC_CLSFLOWER_DESTROY:
-		err = mlx5e_delete_flower(priv->netdev, priv, cls_flower,
+		return mlx5e_delete_flower(priv->netdev, priv, cls_flower,
 					   flags);
-		return err;
 #ifdef HAVE_TC_CLSFLOWER_STATS
 	case TC_CLSFLOWER_STATS:
-		err = mlx5e_stats_flower(priv->netdev, priv, cls_flower,
+		return mlx5e_stats_flower(priv->netdev, priv, cls_flower,
 					  flags);
-		return err;
 #endif
 	default:
 		return -EOPNOTSUPP;
@@ -1502,17 +1523,30 @@ static int mlx5e_rep_setup_tc_cb(enum tc_setup_type type, void *type_data,
 	}
 }
 
+#ifdef HAVE_FLOW_CLS_OFFLOAD
+static LIST_HEAD(mlx5e_rep_block_cb_list);
+#endif
+
 static int mlx5e_rep_setup_tc_block(struct net_device *dev,
 				    struct tc_block_offload *f)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
+#ifdef HAVE_FLOW_CLS_OFFLOAD
+	struct flow_block_cb *block_cb;
+#endif
 
 	if (f->binder_type != TCF_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
 		return -EOPNOTSUPP;
 
+#ifdef HAVE_FLOW_CLS_OFFLOAD
+	f->driver_block_list = &mlx5e_rep_block_cb_list;
+#endif
+
 	switch (f->command) {
 	case TC_BLOCK_BIND:
-#ifndef HAVE_FLOW_CLS_OFFLOAD
+#ifdef HAVE_FLOW_CLS_OFFLOAD
+		block_cb = flow_block_cb_alloc(mlx5e_rep_setup_tc_cb, priv, priv, NULL);
+#else
 		return tcf_block_cb_register(f->block, mlx5e_rep_setup_tc_cb,
 #ifdef HAVE_TC_BLOCK_OFFLOAD_EXTACK
 					     priv, priv, f->extack);
@@ -1521,11 +1555,24 @@ static int mlx5e_rep_setup_tc_block(struct net_device *dev,
 					     priv, priv);
 #endif
 #endif /* HAVE_FLOW_CLS_OFFLOAD */
+#ifdef HAVE_FLOW_CLS_OFFLOAD
+                if (IS_ERR(block_cb)) {
+                        return -ENOENT;
+                }
+                flow_block_cb_add(block_cb, f);
+                list_add_tail(&block_cb->driver_list, f->driver_block_list);
+                return 0;
+#endif
 	case TC_BLOCK_UNBIND:
 #ifndef HAVE_FLOW_CLS_OFFLOAD
 		tcf_block_cb_unregister(f->block, mlx5e_rep_setup_tc_cb, priv);
 #else
-              flow_block_cb_lookup(f->block, mlx5e_rep_setup_tc_cb, priv);
+		block_cb = flow_block_cb_lookup(f->block, mlx5e_rep_setup_tc_cb, priv);
+		if (!block_cb)
+			return -ENOENT;
+
+		flow_block_cb_remove(block_cb, f);
+		list_del(&block_cb->driver_list);
 #endif
 		return 0;
 	default:
@@ -1591,19 +1638,15 @@ bool mlx5e_is_uplink_rep(struct mlx5e_priv *priv)
 {
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep;
-	struct mlx5_eswitch *esw;
 
-	if (!MLX5_ESWITCH_MANAGER(priv->mdev))
+	if (!mlx5e_is_vport_rep_loaded(priv))
 		return false;
 
-	esw = priv->mdev->priv.eswitch;
+	rep = rpriv->rep;
+	if (rep->vport != MLX5_VPORT_UPLINK)
+		return false;
 
-	if (esw && esw->mode == MLX5_ESWITCH_OFFLOADS) {
-		rep = rpriv->rep;
-		return (rep->vport == MLX5_VPORT_UPLINK);
-	}
-
-	return false;
+	return true;
 }
 
 bool mlx5e_is_vport_rep_loaded(struct mlx5e_priv *priv)
@@ -1692,6 +1735,18 @@ static int mlx5e_rep_change_mtu(struct net_device *netdev, int new_mtu)
 	return mlx5e_change_mtu(netdev, new_mtu, NULL);
 }
 
+int mlx5e_uplink_rep_set_vf_vlan(struct net_device *dev, int vf, u16 vlan,
+				 u8 qos, __be16 vlan_proto)
+{
+	netdev_warn_once(dev, "legacy vf vlan setting isn't supported in switchdev mode\n");
+
+	if (vlan != 0)
+		return -EOPNOTSUPP;
+
+	/* allow setting 0-vid for compatibility with libvirt */
+	return 0;
+}
+
 static const struct net_device_ops mlx5e_netdev_ops_rep = {
 	.ndo_open                = mlx5e_rep_open,
 	.ndo_stop                = mlx5e_rep_close,
@@ -1731,7 +1786,7 @@ static const struct net_device_ops mlx5e_netdev_ops_rep = {
 #else
 	.ndo_change_mtu          = mlx5e_rep_change_mtu,
 #endif
-#ifdef HAVE_DEVLINK_HEALTH_REPORT
+#ifdef HAVE_NDO_GET_PORT_PARENT_ID
 	.ndo_get_port_parent_id	 = mlx5e_rep_get_port_parent_id,
 #endif
 };
@@ -1739,7 +1794,8 @@ static const struct net_device_ops mlx5e_netdev_ops_rep = {
 bool mlx5e_eswitch_rep(struct net_device *netdev)
 {
 	if (netdev->netdev_ops == &mlx5e_netdev_ops_rep ||
-	    netdev->netdev_ops == &mlx5e_netdev_ops)
+	    (netdev->netdev_ops == &mlx5e_netdev_ops &&
+	      mlx5e_is_uplink_rep(netdev_priv(netdev))))
 		return true;
 
 	return false;
@@ -1788,9 +1844,11 @@ int mlx5e_attr_get(struct net_device *dev, struct switchdev_attr *attr)
     int err = 0;
 
     switch (attr->id) {
+#ifndef HAVE_NDO_GET_PORT_PARENT_ID
     case SWITCHDEV_ATTR_ID_PORT_PARENT_ID:
         err = mlx5e_rep_get_port_parent_id(dev, &attr->u.ppid);
         break;
+#endif
     default:
         return -EOPNOTSUPP;
     }
@@ -2224,12 +2282,28 @@ mlx5e_vport_uplink_rep_load(struct mlx5_core_dev *dev,
 
 	netdev = rpriv->netdev;
 	priv = netdev_priv(netdev);
-	err = mlx5e_add_sqs_fwd_rules(priv);
+
+	mutex_lock(&priv->state_lock);
+	if (test_bit(MLX5E_STATE_OPENED, &priv->state))
+		err = mlx5e_add_sqs_fwd_rules(priv);
+	mutex_unlock(&priv->state_lock);
 	if (err)
 		goto err_neigh_cleanup;
 
+#ifdef HAVE_MINIFLOW
+	err = tc_setup_cb_egdev_all_register(netdev,
+					     mlx5e_rep_setup_tc_cb_egdev,
+					     priv);
+	if (err)
+		goto err_destroy_sqs;
+#endif
+
 	return 0;
 
+#ifdef HAVE_MINIFLOW
+err_destroy_sqs:
+	mlx5e_remove_sqs_fwd_rules(priv);
+#endif
 err_neigh_cleanup:
 	mlx5e_rep_neigh_cleanup(rpriv);
 
@@ -2346,6 +2420,9 @@ mlx5e_vport_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 		return -EINVAL;
 	}
 
+#ifdef HAVE_DEVLINK_NET
+	dev_net_set(netdev, mlx5_core_net(dev));
+#endif
 	rpriv->netdev = netdev;
 	rep->rep_data[REP_ETH].priv = rpriv;
 	INIT_LIST_HEAD(&rpriv->vport_sqs_list);
@@ -2466,7 +2543,16 @@ mlx5e_vport_uplink_rep_unload(struct mlx5e_rep_priv *rpriv)
 	struct net_device *netdev = rpriv->netdev;
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
-	mlx5e_remove_sqs_fwd_rules(priv);
+#ifdef HAVE_MINIFLOW
+	tc_setup_cb_egdev_all_unregister(netdev,
+					 mlx5e_rep_setup_tc_cb_egdev,
+					 priv);
+#endif
+
+	mutex_lock(&priv->state_lock);
+	if (test_bit(MLX5E_STATE_OPENED, &priv->state))
+		mlx5e_remove_sqs_fwd_rules(priv);
+	mutex_unlock(&priv->state_lock);
 	mlx5e_rep_neigh_cleanup(rpriv);
 	mlx5e_cleanup_uplink_rep_tx(rpriv);
 }

@@ -159,7 +159,7 @@ enum {
 };
 
 struct encap_id_entry {
-	u32 encap_id;
+	struct mlx5_pkt_reformat *pkt_reformat;
 	struct list_head list;
 };
 #endif
@@ -173,6 +173,7 @@ struct mlx5_encap_info {
 };
 #endif
  
+
 struct mlx5e_encap_entry {
 	/* attached neigh hash entry */
 	struct mlx5e_neigh_hash_entry *nhe;
@@ -188,10 +189,9 @@ struct mlx5e_encap_entry {
 	 */
 	struct hlist_node encap_hlist;
 	struct list_head flows;
-	/* positive id or negative error code */
-	s64 encap_id;
+	struct mlx5_pkt_reformat *pkt_reformat;
 #if defined(HAVE_IP_TUNNEL_INFO) || defined(CONFIG_COMPAT_IP_TUNNELS)
-	struct ip_tunnel_info tun_info;
+	const struct ip_tunnel_info *tun_info;
 #else
 	struct mlx5_encap_info tun_info;
 #endif
@@ -199,8 +199,7 @@ struct mlx5e_encap_entry {
 
 	struct net_device *out_dev;
 	struct net_device *route_dev;
-	int tunnel_type;
-	int tunnel_hlen;
+	struct mlx5e_tc_tunnel *tunnel;
 	int reformat_type;
 #ifdef HAVE_TCF_TUNNEL_INFO
 	u8 flags;
@@ -252,6 +251,7 @@ int mlx5e_enslave_rep(struct mlx5_eswitch *esw, struct net_device *netdev,
 		      struct net_device *lag_dev);
 void mlx5e_unslave_rep(struct mlx5_eswitch *esw, const struct net_device *netdev,
 		       const struct net_device *lag_dev);
+void mlx5e_replace_rep_vport_rx_rule_metadata(const struct net_device *dev);
 
 bool mlx5e_eswitch_rep(struct net_device *netdev);
 
@@ -259,6 +259,8 @@ int mlx5e_rep_get_port_parent_id(struct net_device *dev,
 				 struct netdev_phys_item_id *ppid);
 int mlx5e_rep_get_phys_port_name(struct net_device *dev,
 				 char *buf, size_t len);
+int mlx5e_uplink_rep_set_vf_vlan(struct net_device *dev, int vf, u16 vlan,
+				 u8 qos, __be16 vlan_proto);
 int mlx5e_attr_get(struct net_device *dev, struct switchdev_attr *attr);
 
 #ifdef HAVE_SWITCHDEV_H_COMPAT
@@ -270,7 +272,9 @@ static inline bool mlx5e_is_uplink_rep(struct mlx5e_priv *priv) { return false; 
 static inline bool mlx5e_is_vport_rep_loaded(struct mlx5e_priv *priv) { return false; }
 static inline int mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv) { return 0; }
 static inline void mlx5e_remove_sqs_fwd_rules(struct mlx5e_priv *priv) {}
-static inline int mlx5e_attr_get(struct net_device *dev, struct switchdev_attr *attr) { return 0; }
+static inline int mlx5e_uplink_rep_set_vf_vlan(struct net_device *dev, int vf, u16 vlan,
+					       u8 qos, __be16 vlan_proto)
+{ return -EOPNOTSUPP; }
 #endif
 
 static inline bool mlx5e_is_vport_rep(struct mlx5e_priv *priv)

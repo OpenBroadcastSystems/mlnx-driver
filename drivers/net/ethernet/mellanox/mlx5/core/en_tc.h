@@ -81,7 +81,7 @@ struct mlx5_nic_flow_attr {
 	u32 action;
 	u32 flow_tag;
 #ifdef HAVE_TCF_PEDIT_TCFP_KEYS_EX
-	u32 mod_hdr_id;
+	struct mlx5_modify_hdr *modify_hdr;
 #endif
 	u32 hairpin_tirn;
 	u8 match_level;
@@ -155,7 +155,7 @@ struct mlx5e_tc_flow {
 
 struct mlx5e_tc_flow_parse_attr {
 #ifdef HAVE_TCF_TUNNEL_INFO
-       struct ip_tunnel_info tun_info[MLX5_MAX_FLOW_FWD_VPORTS];
+       const struct ip_tunnel_info *tun_info[MLX5_MAX_FLOW_FWD_VPORTS];
 #endif
        struct net_device *filter_dev;
        struct mlx5_flow_spec spec;
@@ -168,7 +168,7 @@ struct mlx5e_tc_flow_parse_attr {
 };
 #endif /* HAVE_TC_FLOWER_OFFLOAD */
 
-#define MLX5_MH_ACT_SZ MLX5_UN_SZ_BYTES(set_action_in_add_action_in_auto)
+#define MLX5_MH_ACT_SZ MLX5_UN_SZ_BYTES(set_add_copy_action_in_auto)
 
 struct pedit_headers {
 	struct ethhdr  eth;

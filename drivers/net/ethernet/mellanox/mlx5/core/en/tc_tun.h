@@ -16,13 +16,62 @@
 enum {
 	MLX5E_TC_TUNNEL_TYPE_UNKNOWN,
 	MLX5E_TC_TUNNEL_TYPE_VXLAN,
-	MLX5E_TC_TUNNEL_TYPE_GRETAP
+	MLX5E_TC_TUNNEL_TYPE_GENEVE,
+	MLX5E_TC_TUNNEL_TYPE_GRETAP,
 };
+
+struct mlx5e_tc_tunnel {
+	int tunnel_type;
+	enum mlx5_flow_match_level match_level;
+
+	bool (*can_offload)(struct mlx5e_priv *priv);
+	int (*calc_hlen)(struct mlx5e_encap_entry *e);
+	int (*init_encap_attr)(struct net_device *tunnel_dev,
+			       struct mlx5e_priv *priv,
+			       struct mlx5e_encap_entry *e
+#ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
+			       , struct netlink_ext_ack *extack
+#endif
+			      );
+
+	int (*generate_ip_tun_hdr)(char buf[],
+				   __u8 *ip_proto,
+				   struct mlx5e_encap_entry *e);
+	int (*parse_udp_ports)(struct mlx5e_priv *priv,
+			       struct mlx5_flow_spec *spec,
+			       struct tc_cls_flower_offload *f,
+			       void *headers_c,
+			       void *headers_v
+#ifndef HAVE_TC_SETUP_FLOW_ACTION
+			       , struct flow_rule *rule
+#endif
+			      );
+
+	int (*parse_tunnel)(struct mlx5e_priv *priv,
+			    struct mlx5_flow_spec *spec,
+			    struct tc_cls_flower_offload *f,
+			    void *headers_c,
+			    void *headers_v
+#ifndef HAVE_TC_SETUP_FLOW_ACTION
+			    , struct flow_rule *rule
+#endif
+			   );
+
+};
+
+extern struct mlx5e_tc_tunnel vxlan_tunnel;
+extern struct mlx5e_tc_tunnel geneve_tunnel;
+extern struct mlx5e_tc_tunnel gre_tunnel;
+
+struct mlx5e_tc_tunnel *mlx5e_get_tc_tun(struct net_device *tunnel_dev);
 
 int mlx5e_tc_tun_init_encap_attr(struct net_device *tunnel_dev,
 				 struct mlx5e_priv *priv,
-				 struct mlx5e_encap_entry *e,
-				 struct netlink_ext_ack *extack);
+				 struct mlx5e_encap_entry *e
+#ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
+				 , struct netlink_ext_ack *extack
+#endif
+				);
 
 int mlx5e_tc_tun_create_header_ipv4(struct mlx5e_priv *priv,
 				    struct net_device *mirred_dev,
@@ -32,7 +81,6 @@ int mlx5e_tc_tun_create_header_ipv6(struct mlx5e_priv *priv,
 				    struct net_device *mirred_dev,
 				    struct mlx5e_encap_entry *e);
 
-int mlx5e_tc_tun_get_type(struct net_device *tunnel_dev);
 bool mlx5e_tc_tun_device_to_offload(struct mlx5e_priv *priv,
 				    struct net_device *netdev);
 
@@ -45,7 +93,18 @@ int mlx5e_tc_tun_parse(struct net_device *filter_dev,
 #ifndef HAVE_TC_SETUP_FLOW_ACTION
 		       , struct flow_rule *rule
 #endif
-						       );
+		      );
+
+int mlx5e_tc_tun_parse_udp_ports(struct mlx5e_priv *priv,
+				 struct mlx5_flow_spec *spec,
+				 struct tc_cls_flower_offload *f,
+				 void *headers_c,
+				 void *headers_v
+#ifndef HAVE_TC_SETUP_FLOW_ACTION
+				 , struct flow_rule *rule
+#endif
+				);
+
 
 #endif /* HAVE_TCF_TUNNEL_INFO */
 #endif //__MLX5_EN_TC_TUNNEL_H__

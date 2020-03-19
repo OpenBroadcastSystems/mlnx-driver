@@ -1211,7 +1211,7 @@ static int nvme_rdma_error_recovery(struct nvme_rdma_ctrl *ctrl)
 			return -EAGAIN;
 	}
 
-	queue_work(nvme_wq, &ctrl->err_work);
+	queue_work(nvme_reset_wq, &ctrl->err_work);
 	return 0;
 }
 

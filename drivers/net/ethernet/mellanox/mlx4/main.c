@@ -68,10 +68,9 @@ MODULE_VERSION(DRV_VERSION);
 struct workqueue_struct *mlx4_wq;
 static struct proc_dir_entry *mlx4_core_proc_dir;
 
-static int mlx4_en_only_mode = 1;
+static int mlx4_en_only_mode = 0;
 module_param(mlx4_en_only_mode, int, 0444);
-MODULE_PARM_DESC(mlx4_en_only_mode, "Load in Ethernet only mode "
-		 "(Ethernet only package, this parameter is disabled)");
+MODULE_PARM_DESC(mlx4_en_only_mode, "Load in Ethernet only mode");
 
 #ifdef CONFIG_MLX4_DEBUG
 
@@ -1047,9 +1046,6 @@ static int mlx4_dev_cap(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 	int err;
 	int i;
 
-	/* Ethernet only package */
-	mlx4_en_only_mode = 1;
-
 	err = mlx4_QUERY_DEV_CAP(dev, dev_cap);
 	if (err) {
 		mlx4_err(dev, "QUERY_DEV_CAP command failed, aborting\n");
@@ -1799,9 +1795,6 @@ static void mlx4_request_modules(struct mlx4_dev *dev)
 	int has_eth_port = false;
 #define EN_DRV_NAME	"mlx4_en"
 #define IB_DRV_NAME	"mlx4_ib"
-
-	/* Ethernet only package */
-	mlx4_en_only_mode = 1;
 
 	for (port = 1; port <= dev->caps.num_ports; port++) {
 		if (dev->caps.port_type[port] == MLX4_PORT_TYPE_IB)
@@ -4758,6 +4751,7 @@ static int mlx4_devlink_port_type_set(struct devlink_port *devlink_port,
 
 	return __set_port_type(info, mlx4_port_type);
 }
+#endif /*HAVE_DEVLINK_H*/
 
 #ifdef HAVE_DEVLINK_DRIVERINIT_VAL
 static void mlx4_devlink_param_load_driverinit_values(struct devlink *devlink)
@@ -4805,11 +4799,56 @@ static void mlx4_devlink_param_load_driverinit_values(struct devlink *devlink)
 	}
 #endif
 }
-static int mlx4_devlink_reload(struct devlink *devlink
-#ifdef HAVE_DEVLINK_RELAOD_EXTACK
-			       ,struct netlink_ext_ack *extack
+#endif /*HAVE_DEVLINK_DRIVERINIT_VAL*/
+
+#ifdef HAVE_DEVLINK_OPS_RELOAD_UP
+static void mlx4_restart_one_down(struct pci_dev *pdev);
+static int mlx4_restart_one_up(struct pci_dev *pdev, bool reload,
+			       struct devlink *devlink);
+static int mlx4_devlink_reload_down(struct devlink *devlink,
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_HAS_3_PARAMS
+				    bool netns_change,
 #endif
-				)
+				    struct netlink_ext_ack *extack)
+{
+	struct mlx4_priv *priv = devlink_priv(devlink);
+	struct mlx4_dev *dev = &priv->dev;
+	struct mlx4_dev_persistent *persist = dev->persist;
+
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_HAS_3_PARAMS
+	if (netns_change) {
+		NL_SET_ERR_MSG_MOD(extack, "Namespace change is not supported");
+		return -EOPNOTSUPP;
+	}
+#endif
+	if (persist->num_vfs)
+		mlx4_warn(persist->dev, "Reload performed on PF, will cause reset on operating Virtual Functions\n");
+	mlx4_restart_one_down(persist->pdev);
+	return 0;
+}
+
+static int mlx4_devlink_reload_up(struct devlink *devlink,
+				  struct netlink_ext_ack *extack)
+{
+	struct mlx4_priv *priv = devlink_priv(devlink);
+	struct mlx4_dev *dev = &priv->dev;
+	struct mlx4_dev_persistent *persist = dev->persist;
+	int err;
+
+	err = mlx4_restart_one_up(persist->pdev, true, devlink);
+	if (err)
+		mlx4_err(persist->dev, "mlx4_restart_one_up failed, ret=%d\n",
+			 err);
+
+	return err;
+}
+#else
+#ifdef HAVE_DEVLINK_HAS_RELOAD
+#ifdef HAVE_DEVLINK_RELOAD_HAS_EXTACK
+static int mlx4_devlink_reload(struct devlink *devlink, struct netlink_ext_ack *extack)
+#else
+static int mlx4_devlink_reload(struct devlink *devlink)
+#endif /*HAVE_DEVLINK_RELOAD_HAS_EXTACK*/
 {
 	struct mlx4_priv *priv = devlink_priv(devlink);
 	struct mlx4_dev *dev = &priv->dev;
@@ -4818,19 +4857,29 @@ static int mlx4_devlink_reload(struct devlink *devlink
 
 	if (persist->num_vfs)
 		mlx4_warn(persist->dev, "Reload performed on PF, will cause reset on operating Virtual Functions\n");
+#ifdef HAVE_DEVLINK_OPS_RELOAD_UP
+	err = mlx4_restart_one(persist->pdev);
+#else
 	err = mlx4_restart_one(persist->pdev, true, devlink);
+#endif
 	if (err)
 		mlx4_err(persist->dev, "mlx4_restart_one failed, ret=%d\n", err);
 
 	return err;
 }
-#endif /*HAVE_DEVLINK_DRIVERINIT_VAL*/
+#endif /*HAVE_DEVLINK_HAS_RELOAD*/
+#endif /*HAVE_DEVLINK_OPS_RELOAD_UP*/
 
+#ifdef HAVE_DEVLINK_H
 static const struct devlink_ops mlx4_devlink_ops = {
 	.port_type_set	= mlx4_devlink_port_type_set,
-#ifdef HAVE_DEVLINK_DRIVERINIT_VAL
-	.reload		= mlx4_devlink_reload,
-#endif /*HAVE_DEVLINK_DRIVERINIT_VAL*/
+#ifdef HAVE_DEVLINK_OPS_RELOAD_UP
+	.reload_up	= mlx4_devlink_reload_up,
+	.reload_down    = mlx4_devlink_reload_down,
+#endif
+#ifdef HAVE_DEVLINK_HAS_RELOAD
+	.reload      = mlx4_devlink_reload,
+#endif
 };
 #endif /*HAVE_DEVLINK_H*/
 static int mlx4_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -4849,7 +4898,6 @@ static int mlx4_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!devlink)
 		return -ENOMEM;
 	priv = devlink_priv(devlink);
-
 #else
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -4895,13 +4943,16 @@ static int mlx4_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		goto err_devlink_unregister;
 #endif /* HAVE_DEVLINK_PARAM  */
+
 #ifdef HAVE_DEVLINK_PARAMS_PUBLISHED
 	devlink_params_publish(devlink);
-#endif /* HAVE_DEVLINK_PARAMS_PUBLISHED  */
+#endif
+#ifdef HAVE_DEVLINK_RELOAD_ENABLE
+	devlink_reload_enable(devlink);
+#endif
 
 	pci_save_state(pdev);
 	return 0;
-
 #else
 	if (ret) {
 		kfree(dev->persist);
@@ -4910,7 +4961,7 @@ static int mlx4_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		pci_save_state(pdev);
 	}
 #endif /* HAVE_DEVLINK_H */
- 
+
 #ifdef HAVE_DEVLINK_H
 #ifdef HAVE_DEVLINK_PARAM
 err_params_unregister:
@@ -5025,6 +5076,10 @@ static void mlx4_remove_one(struct pci_dev *pdev)
 #endif
 	int active_vfs = 0;
 
+#ifdef HAVE_DEVLINK_RELOAD_ENABLE
+	devlink_reload_disable(devlink);
+#endif
+
 	if (mlx4_is_slave(dev))
 		persist->interface_state |= MLX4_INTERFACE_STATE_NOWAIT;
 
@@ -5092,7 +5147,49 @@ static int restore_current_port_types(struct mlx4_dev *dev,
 	return err;
 }
 
-#ifdef HAVE_DEVLINK_DRIVERINIT_VAL
+#ifdef HAVE_DEVLINK_OPS_RELOAD_UP
+static void mlx4_restart_one_down(struct pci_dev *pdev)
+{
+	mlx4_unload_one(pdev);
+}
+
+static int mlx4_restart_one_up(struct pci_dev *pdev,
+			       bool reload,struct devlink *devlink)
+{
+	struct mlx4_dev_persistent *persist = pci_get_drvdata(pdev);
+	struct mlx4_dev	 *dev  = persist->dev;
+	struct mlx4_priv *priv = mlx4_priv(dev);
+	int nvfs[MLX4_MAX_PORTS + 1] = {0, 0, 0};
+	int pci_dev_data, err, total_vfs;
+
+	pci_dev_data = priv->pci_dev_data;
+	total_vfs = dev->persist->num_vfs;
+	memcpy(nvfs, dev->persist->nvfs, sizeof(dev->persist->nvfs));
+
+	if (reload)
+		mlx4_devlink_param_load_driverinit_values(devlink);
+	err = mlx4_load_one(pdev, pci_dev_data, total_vfs, nvfs, priv, 1);
+	if (err) {
+		mlx4_err(dev, "%s: ERROR: mlx4_load_one failed, pci_name=%s, err=%d\n",
+			 __func__, pci_name(pdev), err);
+		return err;
+	}
+
+	err = restore_current_port_types(dev, dev->persist->curr_port_type,
+					 dev->persist->curr_port_poss_type);
+	if (err)
+		mlx4_err(dev, "could not restore original port types (%d)\n",
+			 err);
+
+	return err;
+}
+int mlx4_restart_one(struct pci_dev *pdev)
+{
+	mlx4_restart_one_down(pdev);
+	return mlx4_restart_one_up(pdev, false, NULL);
+}
+#else
+#ifdef HAVE_DEVLINK_H
 int mlx4_restart_one(struct pci_dev *pdev, bool reload, struct devlink *devlink)
 #else
 int mlx4_restart_one(struct pci_dev *pdev)
@@ -5128,6 +5225,7 @@ int mlx4_restart_one(struct pci_dev *pdev)
 
 	return err;
 }
+#endif /*HAVE_DEVLINK_OPS_RELOAD_UP*/
 
 #define MLX_SP(id) { PCI_VDEVICE(MELLANOX, id), MLX4_PCI_DEV_FORCE_SENSE_PORT }
 #define MLX_VF(id) { PCI_VDEVICE(MELLANOX, id), MLX4_PCI_DEV_IS_VF }
@@ -5333,9 +5431,6 @@ static struct pci_driver mlx4_driver = {
 static int __init mlx4_verify_params(void)
 {
 	int status;
-
-	/* Ethernet only package */
-	mlx4_en_only_mode = 1;
 
 	if (mlx4_en_only_mode) {
 		port_type_array.dbdf2val.def_val[0]	= MLX4_PORT_TYPE_ETH;

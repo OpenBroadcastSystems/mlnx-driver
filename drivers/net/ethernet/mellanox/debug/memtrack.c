@@ -795,6 +795,9 @@ int is_non_trackable_alloc_func(const char *func_name)
 		"sdp_bcopy_get",
 		"sdp_destroy_resources",
 		"tcf_exts_init",
+		/* sw steering functions */
+		"dr_icm_chunk_ste_init",
+		"dr_icm_chunks_create",
 	};
 	size_t str_str_arr_size = sizeof(str_str_arr)/sizeof(char *);
 	size_t str_str_excep_size = sizeof(str_str_excep_arr)/sizeof(char *);
@@ -825,6 +828,18 @@ EXPORT_SYMBOL(is_non_trackable_alloc_func);
  */
 int is_non_trackable_free_func(const char *func_name)
 {
+	static const char * const str_cmp_arr[] = {
+		/* sw steering functions */
+		"dr_icm_chunk_ste_cleanup",
+		"dr_icm_chunk_destroy",
+	};
+	size_t str_cmp_arr_size = sizeof(str_cmp_arr)/sizeof(char *);
+	int i;
+
+	for (i = 0; i < str_cmp_arr_size; ++i)
+		if (!strcmp(func_name, str_cmp_arr[i]))
+			return 1;
+
 	return 0;
 }
 EXPORT_SYMBOL(is_non_trackable_free_func);

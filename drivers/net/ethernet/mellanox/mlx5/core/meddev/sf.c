@@ -369,7 +369,11 @@ mlx5_sf_dma_map_resource(struct device *dev, phys_addr_t phys_addr,
 static void
 mlx5_sf_dma_unmap_resource(struct device *dev, dma_addr_t dma_handle,
 			   size_t size, enum dma_data_direction dir,
+#ifdef HAVE_STRUCT_DMA_ATTRS
+			   struct dma_attrs *attrs)
+#else
 			   unsigned long attrs)
+#endif
 {
 	dma_unmap_resource(dev->parent, dma_handle, size, dir, attrs);
 }

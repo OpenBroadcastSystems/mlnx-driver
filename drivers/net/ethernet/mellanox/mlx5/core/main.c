@@ -62,6 +62,7 @@
 #include "fs_core.h"
 #include "lib/mpfs.h"
 #include "eswitch.h"
+#include "devlink.h"
 #include "lib/mlx5.h"
 #include "fpga/core.h"
 #include "fpga/ipsec.h"
@@ -69,7 +70,9 @@
 #include "accel/tls.h"
 #include "lib/clock.h"
 #include "lib/vxlan.h"
+#include "lib/geneve.h"
 #include "lib/devcom.h"
+#include "lib/pci_vsc.h"
 #include "diag/fw_tracer.h"
 #include "ecpf.h"
 #include "icmd.h"
@@ -77,7 +80,7 @@
 #include <asm/pnv-pci.h>
 #endif
 #include "diag/diag_cnt.h"
-#include "devlink.h"
+#include "diag/rsc_dump.h"
 
 MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
 MODULE_DESCRIPTION("Mellanox 5th generation network adapters (ConnectX series) core driver");
@@ -1065,6 +1068,8 @@ static int mlx5_pci_init(struct mlx5_core_dev *dev, struct pci_dev *pdev,
 		goto err_io_unmap;
 	}
 
+	mlx5_pci_vsc_init(dev);
+
 	return 0;
 
 err_io_unmap:
@@ -1137,6 +1142,7 @@ static int mlx5_init_once(struct mlx5_core_dev *dev)
 	mlx5_init_clock(dev);
 
 	dev->vxlan = mlx5_vxlan_create(dev);
+	dev->geneve = mlx5_geneve_create(dev);
 
 	err = mlx5_init_rl_table(dev);
 	if (err) {
@@ -1174,7 +1180,12 @@ static int mlx5_init_once(struct mlx5_core_dev *dev)
 		goto err_eswitch_cleanup;
 	}
 
+	dev->dm = mlx5_dm_create(dev);
+	if (IS_ERR(dev->dm))
+		mlx5_core_warn(dev, "Failed to init device memory%d\n", err);
+
 	dev->tracer = mlx5_fw_tracer_create(dev);
+	dev->rsc_dump = mlx5_rsc_dump_create(dev);
 
 	return 0;
 
@@ -1189,6 +1200,7 @@ err_mpfs_cleanup:
 err_rl_cleanup:
 	mlx5_cleanup_rl_table(dev);
 err_tables_cleanup:
+	mlx5_geneve_destroy(dev->geneve);
 	mlx5_vxlan_destroy(dev->vxlan);
 	mlx5_cleanup_dct_table(dev);
 	mlx5_cleanup_mkey_table(dev);
@@ -1208,13 +1220,16 @@ err_devcom:
 
 static void mlx5_cleanup_once(struct mlx5_core_dev *dev)
 {
+	mlx5_rsc_dump_destroy(dev);
 	mlx5_fw_tracer_destroy(dev->tracer);
+	mlx5_dm_cleanup(dev);
 	mlx5_fpga_cleanup(dev);
 	mlx5_eswitch_cleanup(dev->priv.eswitch);
 	mlx5_sriov_cleanup(dev);
 	mlx5_mst_dump_cleanup(dev);
 	mlx5_mpfs_cleanup(dev);
 	mlx5_cleanup_rl_table(dev);
+	mlx5_geneve_destroy(dev->geneve);
 	mlx5_cleanup_dct_table(dev);
 	mlx5_vxlan_destroy(dev->vxlan);
 	mlx5_cleanup_clock(dev);
@@ -1253,6 +1268,9 @@ static int mlx5_function_setup(struct mlx5_core_dev *dev, bool boot)
 		mlx5_core_err(dev, "Failed initializing command interface, aborting\n");
 		return err;
 	}
+
+	/* remove any previous indication of internal error */
+	dev->state = MLX5_DEVICE_STATE_UP;
 
 	err = wait_fw_init(dev, FW_INIT_TIMEOUT_MILI, 0);
 	if (err) {
@@ -1332,6 +1350,7 @@ reclaim_boot_pages:
 err_disable_hca:
 	mlx5_core_disable_hca(dev, 0);
 err_cmd_cleanup:
+	dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
 	mlx5_cmd_cleanup(dev);
 
 	return err;
@@ -1349,6 +1368,7 @@ static int mlx5_function_teardown(struct mlx5_core_dev *dev, bool boot)
 	}
 	mlx5_reclaim_startup_pages(dev);
 	mlx5_core_disable_hca(dev, 0);
+	dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
 	mlx5_cmd_cleanup(dev);
 	if (!mlx5_core_is_sf(dev))
 		unregister_pcie_dev_attr_group(dev->pdev);
@@ -1392,6 +1412,12 @@ static int mlx5_load(struct mlx5_core_dev *dev)
 	if (err) {
 		mlx5_core_err(dev, "Failed to init FW tracer\n");
 		goto err_fw_tracer;
+	}
+
+	err = mlx5_rsc_dump_init(dev);
+	if (err) {
+		mlx5_core_err(dev, "Failed to init Resource dump\n");
+		goto err_rsc_dump;
 	}
 
 	err = mlx5_fpga_device_start(dev);
@@ -1453,6 +1479,8 @@ err_tls_start:
 err_ipsec_start:
 	mlx5_fpga_device_stop(dev);
 err_fpga_start:
+	mlx5_rsc_dump_cleanup(dev);
+err_rsc_dump:
 	mlx5_fw_tracer_cleanup(dev->tracer);
 err_fw_tracer:
 	mlx5_eq_table_destroy(dev);
@@ -1480,6 +1508,7 @@ static void mlx5_unload(struct mlx5_core_dev *dev)
 	mlx5_accel_tls_cleanup(dev);
 #endif
 	mlx5_fpga_device_stop(dev);
+	mlx5_rsc_dump_cleanup(dev);
 	mlx5_fw_tracer_cleanup(dev->tracer);
 	mlx5_eq_table_destroy(dev);
 	mlx5_irq_table_destroy(dev);
@@ -1501,8 +1530,6 @@ int mlx5_load_one(struct mlx5_core_dev *dev, bool boot)
 		mlx5_core_warn(dev, "interface is up, NOP\n");
 		goto out;
 	}
-	/* remove any previous indication of internal error */
-	dev->state = MLX5_DEVICE_STATE_UP;
 
 	err = mlx5_function_setup(dev, boot);
 	if (err)
@@ -1553,7 +1580,6 @@ err_load:
 		mlx5_cleanup_once(dev);
 function_teardown:
 	mlx5_function_teardown(dev, boot);
-	dev->state = MLX5_DEVICE_STATE_INTERNAL_ERROR;
 	mutex_unlock(&dev->intf_state_mutex);
 
 	return err;
@@ -1608,7 +1634,7 @@ int mlx5_unload_one(struct mlx5_core_dev *dev, bool cleanup)
 
 	if (cleanup) {
 		mlx5_unregister_device(dev);
-		mlx5_drain_health_recovery(dev);
+		mlx5_drain_health_wq(dev);
 	}
 
 	mutex_lock(&dev->intf_state_mutex);
@@ -1635,23 +1661,6 @@ out:
 	mutex_unlock(&dev->intf_state_mutex);
 	return err;
 }
-
-static const struct devlink_ops mlx5_devlink_ops = {
-#ifdef CONFIG_MLX5_ESWITCH
-#ifdef HAVE_DEVLINK_HAS_ESWITCH_MODE_GET_SET
-	.eswitch_mode_set = mlx5_devlink_eswitch_mode_set,
-	.eswitch_mode_get = mlx5_devlink_eswitch_mode_get,
-#endif /* HAVE_DEVLINK_HAS_ESWITCH_MODE_GET_SET */
-#ifdef HAVE_DEVLINK_HAS_ESWITCH_INLINE_MODE_GET_SET
-	.eswitch_inline_mode_set = mlx5_devlink_eswitch_inline_mode_set,
-	.eswitch_inline_mode_get = mlx5_devlink_eswitch_inline_mode_get,
-#endif /* HAVE_DEVLINK_HAS_ESWITCH_INLINE_MODE_GET_SET */
-#ifdef HAVE_DEVLINK_HAS_ESWITCH_ENCAP_MODE_SET
-	.eswitch_encap_mode_set = mlx5_devlink_eswitch_encap_mode_set,
-	.eswitch_encap_mode_get = mlx5_devlink_eswitch_encap_mode_get,
-#endif /* HAVE_DEVLINK_HAS_ESWITCH_ENCAP_MODE_SET */
-#endif
-};
 
 #ifdef CONFIG_CXL_LIB
 enum {
@@ -2058,9 +2067,9 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	struct mlx5_priv *priv;
 	int err;
 
-	devlink = devlink_alloc(&mlx5_devlink_ops, sizeof(*dev));
+	devlink = mlx5_devlink_alloc();
 	if (!devlink) {
-		dev_err(&pdev->dev, "kzalloc failed\n");
+		dev_err(&pdev->dev, "devlink alloc failed\n");
 		return -ENOMEM;
 	}
 
@@ -2122,9 +2131,13 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	request_module_nowait(MLX5_IB_MOD);
 
-	err = devlink_register(devlink, &pdev->dev);
+	err = mlx5_devlink_register(devlink, &pdev->dev);
 	if (err)
 		goto clean_load;
+
+	err = mlx5_crdump_enable(dev);
+	if (err)
+		dev_err(&pdev->dev, "mlx5_crdump_enable failed with error code %d\n", err);
 
 	pci_save_state(pdev);
 	return 0;
@@ -2144,7 +2157,7 @@ clean_crdump:
 pci_init_err:
 	mlx5_mdev_uninit(dev);
 mdev_init_err:
-	devlink_free(devlink);
+	mlx5_devlink_free(devlink);
 
 	return err;
 }
@@ -2162,10 +2175,12 @@ static void remove_one(struct pci_dev *pdev)
 	if (pdev->is_virtfn && !priv->sriov.probe_vf)
 		goto out;
 
-	if (mlx5_try_fast_unload(dev))
+	if (priv->steering->mode == MLX5_FLOW_STEERING_MODE_DMFS &&
+	    mlx5_try_fast_unload(dev))
 		dev_dbg(&dev->pdev->dev, "mlx5_try_fast_unload failed\n");
 
-	devlink_unregister(devlink);
+	mlx5_crdump_disable(dev);
+	mlx5_devlink_unregister(devlink);
 
 	if (mlx5_unload_one(dev, true)) {
 		mlx5_core_err(dev, "mlx5_unload_one failed\n");
@@ -2184,7 +2199,7 @@ static void remove_one(struct pci_dev *pdev)
 	mlx5_mdev_uninit(dev);
 out:
 	device_remove_file(&pdev->dev, mlx5_roce_enable_dev_attrs);
-	devlink_free(devlink);
+	mlx5_devlink_free(devlink);
 }
 
 #ifdef CONFIG_PM
@@ -2275,6 +2290,7 @@ static pci_ers_result_t mlx5_pci_err_detected(struct pci_dev *pdev,
 	mlx5_core_info(dev, "%s was called\n", __func__);
 
 	mlx5_enter_error_state(dev, false);
+	mlx5_error_sw_reset(dev);
 	mlx5_unload_one(dev, false);
 
 #ifdef CONFIG_CXL_LIB
@@ -2283,11 +2299,8 @@ static pci_ers_result_t mlx5_pci_err_detected(struct pci_dev *pdev,
 		mlx5_icmd_cleanup(dev);
 	}
 #endif
-	/* In case of kernel call drain the health wq */
-	if (state) {
-		mlx5_drain_health_wq(dev);
-		mlx5_pci_disable_device(dev);
-	}
+	mlx5_drain_health_wq(dev);
+	mlx5_pci_disable_device(dev);
 
 	return state == pci_channel_io_perm_failure ?
 		PCI_ERS_RESULT_DISCONNECT : PCI_ERS_RESULT_NEED_RESET;
@@ -2411,6 +2424,7 @@ static const struct pci_device_id mlx5_core_pci_table[] = {
 	{ PCI_VDEVICE(MELLANOX, 0x101d) },			/* ConnectX-6 Dx */
 	{ PCI_VDEVICE(MELLANOX, 0x101e), MLX5_PCI_DEV_IS_VF},	/* ConnectX Family mlx5Gen Virtual Function */
 	{ PCI_VDEVICE(MELLANOX, 0x101f) },			/* ConnectX-6 Lx */
+	{ PCI_VDEVICE(MELLANOX, 0x1021) },			/* ConnectX-7 */
 	{ PCI_VDEVICE(MELLANOX, 0xa2d2) },			/* BlueField integrated ConnectX-5 network controller */
 	{ PCI_VDEVICE(MELLANOX, 0xa2d3), MLX5_PCI_DEV_IS_VF},	/* BlueField integrated ConnectX-5 network controller VF */
 	{ PCI_VDEVICE(MELLANOX, 0xa2d6) },			/* BlueField integrated Connectx-6Dx */
@@ -2421,7 +2435,8 @@ MODULE_DEVICE_TABLE(pci, mlx5_core_pci_table);
 
 void mlx5_disable_device(struct mlx5_core_dev *dev)
 {
-	mlx5_pci_err_detected(dev->pdev, 0);
+	mlx5_error_sw_reset(dev);
+	mlx5_unload_one(dev, false);
 }
 
 void mlx5_recover_device(struct mlx5_core_dev *dev)
@@ -2492,7 +2507,7 @@ static int __init init(void)
 	get_random_bytes(&sw_owner_id, sizeof(sw_owner_id));
 
 	mlx5_core_verify_params();
-	mlx5_fpga_ipsec_build_fs_cmds();
+	mlx5_accel_ipsec_build_fs_cmds();
 	mlx5_register_debugfs();
 	err = mlx5_create_core_dir();
 	if (err)

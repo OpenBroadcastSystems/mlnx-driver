@@ -210,10 +210,14 @@ static void mlx4_handle_error_state(struct mlx4_dev_persistent *persist)
 	mutex_lock(&persist->interface_state_mutex);
 	if (persist->interface_state & MLX4_INTERFACE_STATE_UP &&
 	    !(persist->interface_state & MLX4_INTERFACE_STATE_DELETION)) {
-#ifdef HAVE_DEVLINK_DRIVERINIT_VAL
+#ifdef HAVE_DEVLINK_OPS_RELOAD_UP
+		err = mlx4_restart_one(persist->pdev);
+#else
+#ifdef HAVE_DEVLINK_H
 		err = mlx4_restart_one(persist->pdev, false, NULL);
 #else
 		err = mlx4_restart_one(persist->pdev);
+#endif
 #endif
 		mlx4_info(persist->dev, "mlx4_restart_one was ended, ret=%d\n",
 			  err);

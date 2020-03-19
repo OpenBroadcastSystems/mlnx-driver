@@ -44,8 +44,16 @@
 #define HAVE_TC_BLOCK_OFFLOAD 1
 #endif
 
+#ifdef HAVE___FLOW_INDR_BLOCK_CB_REGISTER
+#define HAVE___TC_INDR_BLOCK_CB_REGISTER
+#endif
+
 #if defined(HAVE_IPV6_STUBS_H) && !defined(HAVE_IPV6_STUB)
 #define HAVE_IPV6_STUB 1
+#endif
+
+#ifdef HAVE_TC_SETUP_FLOW_ACTION_WITH_RTNL_HELD
+#define HAVE_TC_SETUP_FLOW_ACTION 1
 #endif
 
 #endif /* COMPAT_FIX_H */

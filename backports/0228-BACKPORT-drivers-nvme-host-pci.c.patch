@@ -112,7 +112,7 @@ Change-Id: I126cff9b8793bd2de2ee0cce424f41fcebe7fb78
  	int npages;		/* In the PRP list. 0 means small pool in use */
  	int nents;		/* Used in scatterlist */
  	dma_addr_t first_dma;
-+#ifdef HAVE_BLKDEV_DMA_MAP_BVEC
++#if defined(HAVE_BLKDEV_DMA_MAP_BVEC) && defined(HAVE_BLKDEV_REQ_BVEC)
  	unsigned int dma_len;	/* length of single DMA segment mapping */
  	dma_addr_t meta_dma;
 +#else
@@ -298,7 +298,7 @@ Change-Id: I126cff9b8793bd2de2ee0cce424f41fcebe7fb78
  	dma_addr_t dma_addr = iod->first_dma, next_dma_addr;
  	int i;
  
-+#ifdef HAVE_BLKDEV_DMA_MAP_BVEC
++#if defined(HAVE_BLKDEV_DMA_MAP_BVEC) && defined(HAVE_BLKDEV_REQ_BVEC)
  	if (iod->dma_len) {
  		dma_unmap_page(dev->dev, dma_addr, iod->dma_len, dma_dir);
  		return;
@@ -379,7 +379,7 @@ Change-Id: I126cff9b8793bd2de2ee0cce424f41fcebe7fb78
  	return BLK_STS_OK;
  }
  
-+#ifdef HAVE_BLKDEV_DMA_MAP_BVEC
++#if defined(HAVE_BLKDEV_DMA_MAP_BVEC) && defined(HAVE_BLKDEV_REQ_BVEC)
  static blk_status_t nvme_setup_prp_simple(struct nvme_dev *dev,
  		struct request *req, struct nvme_rw_command *cmnd,
  		struct bio_vec *bv)
@@ -395,7 +395,7 @@ Change-Id: I126cff9b8793bd2de2ee0cce424f41fcebe7fb78
  	blk_status_t ret = BLK_STS_RESOURCE;
  	int nr_mapped;
  
-+#ifdef HAVE_BLKDEV_DMA_MAP_BVEC
++#if defined(HAVE_BLKDEV_DMA_MAP_BVEC) && defined(HAVE_BLKDEV_REQ_BVEC)
  	if (blk_rq_nr_phys_segments(req) == 1) {
  		struct bio_vec bv = req_bvec(req);
  
@@ -426,7 +426,7 @@ Change-Id: I126cff9b8793bd2de2ee0cce424f41fcebe7fb78
  {
  	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
  
-+#ifdef HAVE_BLKDEV_DMA_MAP_BVEC
++#if defined(HAVE_BLKDEV_DMA_MAP_BVEC) && defined(HAVE_BLKDEV_REQ_BVEC)
  	iod->meta_dma = dma_map_bvec(dev->dev, rq_integrity_vec(req),
  			rq_dma_dir(req), 0);
  	if (dma_mapping_error(dev->dev, iod->meta_dma))
@@ -451,7 +451,7 @@ Change-Id: I126cff9b8793bd2de2ee0cce424f41fcebe7fb78
  
  	nvme_cleanup_cmd(req);
  	if (blk_integrity_rq(req))
-+#ifdef HAVE_BLKDEV_DMA_MAP_BVEC
++#if defined(HAVE_BLKDEV_DMA_MAP_BVEC) && defined(HAVE_BLKDEV_REQ_BVEC)
  		dma_unmap_page(dev->dev, iod->meta_dma,
  			       rq_integrity_vec(req)->bv_len, rq_data_dir(req));
 +#else

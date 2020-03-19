@@ -35,8 +35,8 @@
 #include <linux/errno.h>
 
 #define DRV_NAME	"mlx4_ib"
-#define DRV_VERSION	"4.7-3.2.9"
-#define DRV_RELDATE	"12 Dec 2019"
+#define DRV_VERSION	"5.0-1.0.0.0"
+#define DRV_RELDATE	"27 Feb 2020"
 
 MODULE_AUTHOR("Vladimir Sokolovsky");
 MODULE_DESCRIPTION("mlx4_ib dummy kernel module");

@@ -34,6 +34,11 @@ static char *uplink_rep_mode_to_str[] = {
 	[MLX5_ESW_UPLINK_REP_MODE_NIC_NETDEV] = "nic_netdev",
 };
 
+static char *steering_mode_to_str[] = {
+	[DEVLINK_ESWITCH_STEERING_MODE_DMFS] = "dmfs",
+	[DEVLINK_ESWITCH_STEERING_MODE_SMFS] = "smfs",
+};
+
 struct devlink_compat_op {
 #ifdef HAVE_DEVLINK_ESWITCH_MODE_SET_EXTACK
 	int (*write_enum)(struct devlink *devlink, enum devlink_eswitch_encap_mode set, struct netlink_ext_ack *extack);
@@ -47,6 +52,10 @@ struct devlink_compat_op {
 	int (*read_enum)(struct devlink *devlink, enum devlink_eswitch_encap_mode *read);
 	int (*read_u8)(struct devlink *devlink, u8 *read);
 	int (*read_u16)(struct devlink *devlink, u16 *read);
+
+	int (*read_steering_mode)(struct devlink *devlink, enum devlink_eswitch_steering_mode *read);
+	int (*write_steering_mode)(struct devlink *devlink, enum devlink_eswitch_steering_mode set);
+
 	char **map;
 	int map_size;
 	char *compat_name;
@@ -86,6 +95,13 @@ static struct devlink_compat_op devlink_compat_ops[] =  {
 		.map_size = ARRAY_SIZE(uplink_rep_mode_to_str),
 		.compat_name = "uplink_rep_mode",
 	},
+	{
+		.read_steering_mode = mlx5_devlink_eswitch_steering_mode_get,
+		.write_steering_mode = mlx5_devlink_eswitch_steering_mode_set,
+		.map = steering_mode_to_str,
+		.map_size = ARRAY_SIZE(steering_mode_to_str),
+		.compat_name = "steering_mode",
+	},
 };
 
 struct compat_devlink {
@@ -101,11 +117,13 @@ static ssize_t esw_compat_read(struct kobject *kobj,
 						       struct compat_devlink,
 						       devlink_kobj);
 	struct mlx5_core_dev *dev = cdevlink->mdev;
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
 	struct devlink *devlink = priv_to_devlink(dev);
 	const char *entname = attr->attr.name;
 	struct devlink_compat_op *op = 0;
 	int i = 0, ret, len = 0;
 	enum devlink_eswitch_encap_mode read_enum;
+	enum devlink_eswitch_steering_mode read_steering_mode;
 	u8 read8;
 	u16 read;
 
@@ -117,15 +135,26 @@ static ssize_t esw_compat_read(struct kobject *kobj,
 	if (!op)
 		return -ENOENT;
 
+	if (atomic_inc_return(&esw->handler.in_progress) > 1)
+		return -EBUSY;
+
 	if (op->read_u16) {
 		ret = op->read_u16(devlink, &read);
 	} else if (op->read_u8) {
 		ret = op->read_u8(devlink, &read8);
 		read = read8;
-	} else {
+	} else if (op->read_enum){
 		ret = op->read_enum(devlink, &read_enum);
 		read = read_enum;
 	}
+	else if (op->read_steering_mode) {
+		ret = op->read_steering_mode(devlink, &read_steering_mode);
+		read = read_steering_mode;
+	}
+	else
+		return -ENOENT;
+
+	atomic_set(&esw->handler.in_progress, 0);
 
 	if (ret < 0)
 		return ret;
@@ -146,6 +175,7 @@ static ssize_t esw_compat_write(struct kobject *kobj,
 						       struct compat_devlink,
 						       devlink_kobj);
 	struct mlx5_core_dev *dev = cdevlink->mdev;
+	struct mlx5_eswitch *esw = dev->priv.eswitch;
 	struct devlink *devlink = priv_to_devlink(dev);
 #ifdef HAVE_NETLINK_EXT_ACK
 	static struct netlink_ext_ack ack = { ._msg = NULL };
@@ -178,6 +208,15 @@ static ssize_t esw_compat_write(struct kobject *kobj,
 		return -EINVAL;
 	}
 
+	/* For eswitch_mode_set, in_progress will be incremented inside
+	 * the callback function, and the value will be kept after return
+	 * because it will be set to zero later when eswitch offloads
+	 * start/stop is really finished by worker.
+	 */
+	if ((strcmp(entname, "mode") != 0) &&
+	    atomic_inc_return(&esw->handler.in_progress) > 1)
+		return -EBUSY;
+
 	if (op->write_u16)
 		ret = op->write_u16(devlink, set
 #ifdef HAVE_DEVLINK_ESWITCH_MODE_SET_EXTACK
@@ -190,12 +229,19 @@ static ssize_t esw_compat_write(struct kobject *kobj,
 				   , &ack
 #endif
 				   );
-	else
+	else if (op->write_enum)
 		ret = op->write_enum(devlink, set
 #ifdef HAVE_DEVLINK_ESWITCH_MODE_SET_EXTACK
 				   , &ack
 #endif
 				   );
+	else if (op->write_steering_mode)
+		ret = op->write_steering_mode(devlink, set);
+	else
+		return -EINVAL;
+
+	if (strcmp(entname, "mode") != 0)
+		atomic_set(&esw->handler.in_progress, 0);
 
 #ifdef HAVE_NETLINK_EXT_ACK
 	if (ack._msg)

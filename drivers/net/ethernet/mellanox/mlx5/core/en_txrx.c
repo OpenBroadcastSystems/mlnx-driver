@@ -35,6 +35,7 @@
 #endif
 #include "en.h"
 #include "en/xdp.h"
+#include "en/txrx.h"
 
 #if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
 static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)

@@ -58,7 +58,7 @@
 #include "fw_qos.h"
 
 #define DRV_NAME	"mlx4_core"
-#define DRV_VERSION	"4.7-3.2.9"
+#define DRV_VERSION	"5.0-1.0.0.0"
 #define DRV_NAME_FOR_FW	"Linux-MLNX_EN," DRV_VERSION
 
 #define MLX4_FS_NUM_OF_L2_ADDR		8
@@ -1088,12 +1088,15 @@ void mlx4_crdump_proc_init(struct proc_dir_entry *proc_core_dir);
 void mlx4_crdump_proc_cleanup(struct proc_dir_entry *proc_core_dir);
 int mlx4_crdump_init(struct mlx4_dev *dev);
 void mlx4_crdump_end(struct mlx4_dev *dev);
-#ifdef HAVE_DEVLINK_DRIVERINIT_VAL
-int mlx4_restart_one(struct pci_dev *pdev, bool reload,
-		     struct devlink *devlink);
+#ifdef HAVE_DEVLINK_OPS_RELOAD_UP
+int mlx4_restart_one(struct pci_dev *pdev);
+#else
+#ifdef HAVE_DEVLINK_H
+int mlx4_restart_one(struct pci_dev *pdev, bool reload, struct devlink *devlink);
 #else
 int mlx4_restart_one(struct pci_dev *pdev);
-#endif
+#endif /*HAVE_DEVLINK_H*/
+#endif /*HAVE_DEVLINK_OPS_RELOAD_UP*/
 int mlx4_register_device(struct mlx4_dev *dev);
 void mlx4_unregister_device(struct mlx4_dev *dev);
 void mlx4_dispatch_event(struct mlx4_dev *dev, enum mlx4_dev_event type,
