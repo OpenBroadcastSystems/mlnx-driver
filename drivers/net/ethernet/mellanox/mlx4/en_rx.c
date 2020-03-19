@@ -1034,8 +1034,8 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 			case XDP_ABORTED:
 #if defined(HAVE_TRACE_XDP_EXCEPTION) && !defined(MLX_DISABLE_TRACEPOINTS)
 				trace_xdp_exception(dev, xdp_prog, act);
-				/* fall through */
 #endif
+				/* fall through */
 			case XDP_DROP:
 				ring->xdp_drop++;
 xdp_drop_no_cnt:

@@ -119,7 +119,7 @@ static void flow_offload_fixup_ct_state(struct nf_conn *ct)
 	if (l4num == IPPROTO_TCP)
 		flow_offload_fixup_tcp(&ct->proto.tcp);
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,19,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
 	l4proto = __nf_ct_l4proto_find(nf_ct_l3num(ct), l4num);
 #else
 	l4proto = __nf_ct_l4proto_find(l4num);
@@ -532,7 +532,7 @@ int mlx5_ct_flow_offload_add(const struct net *net,
 	if (entry->flow.flags & (FLOW_OFFLOAD_DYING | FLOW_OFFLOAD_TEARDOWN)) {
 		spin_unlock(&entry->dep_lock);
 		err = -EAGAIN;
-		goto out;
+		goto err_flow;
 	}
 	tc_flow->dep_lock = &entry->dep_lock;
 	ct_flow_offload_add(tc_flow, &entry->deps);
@@ -545,7 +545,7 @@ int mlx5_ct_flow_offload_add(const struct net *net,
 out:
 	spin_unlock(&flowtable->ht_lock);
 	rcu_read_unlock();
-
+err_flow:
 	return err;
 }
 

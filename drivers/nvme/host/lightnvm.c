@@ -661,7 +661,10 @@ static struct request *nvme_nvm_alloc_request(struct request_queue *q,
 
 	rq->cmd_flags &= ~REQ_FAILFAST_DRIVER;
 
-	if (rqd->bio)
+	if (rqd->bio) {
+#ifdef HAVE_BLK_RQ_APPEND_BIO
+		blk_rq_append_bio(rq, &rqd->bio);
+#else
 #ifdef HAVE_BLK_INIT_REQUEST_FROM_BIO
 		blk_init_request_from_bio(rq, rqd->bio);
 #else
@@ -670,7 +673,9 @@ static struct request *nvme_nvm_alloc_request(struct request_queue *q,
 		rq->bio = rq->biotail = rqd->bio;
 		if (bio_has_data(rqd->bio))
 			rq->nr_phys_segments = bio_phys_segments(q, rqd->bio);
-#endif
+#endif /* HAVE_BLK_INIT_REQUEST_FROM_BIO */
+#endif /* HAVE_BLK_RQ_APPEND_BIO */
+	}
 	else
 		rq->ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, IOPRIO_NORM);
 

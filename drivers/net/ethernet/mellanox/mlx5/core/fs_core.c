@@ -643,8 +643,11 @@ static void del_sw_flow_group(struct fs_node *node)
 
 	rhashtable_destroy(&fg->ftes_hash);
 	ida_destroy(&fg->fte_allocator);
-	if (ft->autogroup.active)
+	if (ft->autogroup.active) {
+		if (fg->max_ftes == ft->autogroup.big_group_size)
+			ft->autogroup.num_big_groups--;
 		ft->autogroup.num_groups--;
+	}
 #if !defined(HAVE_RHLTABLE) && defined(HAVE_NETNS_FRAGS_RHASHTABLE)
 	err = bp_rhltable_remove(&ft->fgs_hash,
 #else
@@ -1209,7 +1212,9 @@ mlx5_create_auto_grouped_flow_table(struct mlx5_flow_namespace *ns,
 		return ft;
 
 	ft->autogroup.active = true;
-	ft->autogroup.required_groups = max_num_groups;
+	ft->autogroup.required_big_groups = max_num_groups;
+	/* We save place for flow groups in addition to max types */
+	ft->autogroup.big_group_size = ft->max_fte / (max_num_groups + 1);
 
 	return ft;
 }
@@ -1417,9 +1422,8 @@ static struct mlx5_flow_group *alloc_auto_flow_group(struct mlx5_flow_table  *ft
 	if (!ft->autogroup.active)
 		return ERR_PTR(-ENOENT);
 
-	if (ft->autogroup.num_groups < ft->autogroup.required_groups)
-		/* We save place for flow groups in addition to max types */
-		group_size = ft->max_fte / (ft->autogroup.required_groups + 1);
+	if (ft->autogroup.num_big_groups < ft->autogroup.required_big_groups)
+		group_size = ft->autogroup.big_group_size;
 
 	/*  ft->max_fte == ft->autogroup.max_types */
 	if (group_size == 0)
@@ -1447,6 +1451,8 @@ static struct mlx5_flow_group *alloc_auto_flow_group(struct mlx5_flow_table  *ft
 		goto out;
 
 	ft->autogroup.num_groups++;
+	if (group_size == ft->autogroup.big_group_size)
+		ft->autogroup.num_big_groups++;
 
 out:
 	return fg;
@@ -1862,6 +1868,7 @@ try_add_to_existing_fg(struct mlx5_flow_table *ft,
 	bool take_write = false;
 	struct fs_fte *fte;
 	u64  version;
+	bool try_again = false;
 	int err;
 
 	fte = alloc_fte(ft, spec, flow_act);
@@ -1932,8 +1939,10 @@ skip_search:
 	list_for_each_entry(iter, match_head, list) {
 		g = iter->g;
 
-		if (!g->node.active)
+		if (!g->node.active) {
+			try_again = true;
 			continue;
+		}
 
 		nested_down_write_ref_node(&g->node, FS_LOCK_PARENT);
 
@@ -1953,7 +1962,11 @@ skip_search:
 		tree_put_node(&fte->node, false);
 		return rule;
 	}
-	rule = ERR_PTR(-ENOENT);
+	if (try_again)
+		err = -EAGAIN;
+	else
+		err = -ENOENT;
+	rule = ERR_PTR(err);
 out:
 	kmem_cache_free(steering->ftes_cache, fte);
 	return rule;

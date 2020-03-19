@@ -142,7 +142,7 @@ static int mlx5e_route_lookup_ipv6(struct mlx5e_priv *priv,
 	struct neighbour *n = NULL;
 	struct dst_entry *dst;
 
-#if IS_ENABLED(CONFIG_INET) && IS_ENABLED(CONFIG_IPV6) && defined(__IPV6_SUPPORT__)
+#if IS_ENABLED(CONFIG_INET) && IS_ENABLED(CONFIG_IPV6) && defined(HAVE_IPV6_STUB) && defined(HAVE_IPV6_DST_LOOKUP_TAKES_NET)
 	int ret;
 
 	ret = ipv6_stub->ipv6_dst_lookup(dev_net(mirred_dev), NULL, &dst,
@@ -501,6 +501,11 @@ out:
 
 int mlx5e_tc_tun_get_type(struct net_device *tunnel_dev)
 {
+#if !defined(HAVE___TC_INDR_BLOCK_CB_REGISTER) && !defined(CONFIG_COMPAT_KERNEL_4_14)
+/* in old kernels with egdev we don't pass the netdev so the filter_dev here
+ * is actually priv->netdev. we only assume and support vxlan */
+	return MLX5E_TC_TUNNEL_TYPE_VXLAN;
+#endif
 	if (netif_is_vxlan(tunnel_dev))
 		return MLX5E_TC_TUNNEL_TYPE_VXLAN;
 	else if (netif_is_gretap(tunnel_dev) ||
@@ -699,13 +704,7 @@ int mlx5e_tc_tun_parse(struct net_device *filter_dev,
 	int tunnel_type;
 	int err = 0;
 
-#if !defined(HAVE___TC_INDR_BLOCK_CB_REGISTER) && !defined(CONFIG_COMPAT_KERNEL_4_14)
-/* in old kernels with egdev we don't pass the netdev so the filter_dev here
- * is actually priv->netdev. we only assume and support vxlan */
-	tunnel_type = MLX5E_TC_TUNNEL_TYPE_VXLAN;
-#else
 	tunnel_type = mlx5e_tc_tun_get_type(filter_dev);
-#endif
 	if (tunnel_type == MLX5E_TC_TUNNEL_TYPE_VXLAN) {
 		*match_level = MLX5_MATCH_L4;
 		err = mlx5e_tc_tun_parse_vxlan(priv, spec, f,

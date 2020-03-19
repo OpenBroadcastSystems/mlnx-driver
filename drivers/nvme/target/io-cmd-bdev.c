@@ -358,6 +358,9 @@ static void nvmet_bdev_execute_write_zeroes(struct nvmet_req *req)
 #else
 	if (__blkdev_issue_zeroout(req->ns->bdev, sector, nr_sector,
 			GFP_KERNEL, &bio, true))
+		ret = -EIO;
+	else
+		ret = 0;
 #endif
 	if (bio) {
 		bio->bi_private = req;

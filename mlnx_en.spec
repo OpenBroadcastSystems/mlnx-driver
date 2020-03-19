@@ -34,7 +34,8 @@
 %global POWERKVM %(if (grep -qiE "powerkvm" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global BLUENIX %(if (grep -qiE "Bluenix" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global XENSERVER65 %(if (grep -qiE "XenServer.*6\.5" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
-%global RHEL8 %(if test `grep -E '^(ID="rhel"|VERSION="8)' /etc/os-release 2>/dev/null | wc -l` -eq 2; then echo -n '1'; else echo -n '0'; fi)
+# Force python3 on RHEL8 and OL8:
+%global PYTHON3 %(if test `grep -E '^(ID="(rhel|ol|centos)"|VERSION="8)' /etc/os-release 2>/dev/null | wc -l` -eq 2; then echo -n '1'; else echo -n '0'; fi)
 
 %{!?MEMTRACK: %global MEMTRACK 0}
 %{!?MLX4: %global MLX4 1}
@@ -74,10 +75,10 @@
 
 %{!?_name: %global _name mlnx-en}
 %{!?_version: %global _version 4.7}
-%{!?_release: %global _release 1.0.0.0.g1c4bf42}
+%{!?_release: %global _release 3.2.9.0.g457f064}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
-%if %{RHEL8}
+%if %{PYTHON3}
 %global mlnx_python_env    export MLNX_PYTHON_EXECUTABLE=python3
 %global mlnx_python        python3
 %else
@@ -102,7 +103,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -110,7 +111,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -118,7 +119,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -126,14 +127,14 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
@@ -160,7 +161,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-1.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-4.7-3.2.9.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -227,7 +228,7 @@ The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mln
 set -- *
 mkdir source
 mv "$@" source/
-%if %{RHEL8}
+%if %{PYTHON3}
 sed -s -i -e '1s|python\>|python3|' `grep -rl '^#!.*python' source/ofed_scripts`
 %endif
 mkdir obj

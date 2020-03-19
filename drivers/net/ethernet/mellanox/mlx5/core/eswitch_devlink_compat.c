@@ -4,6 +4,7 @@
 #include <linux/mlx5/mlx5_ifc.h>
 #include <linux/mlx5/vport.h>
 #include <linux/mlx5/fs.h>
+#include <uapi/linux/devlink.h>
 #include <linux/fs.h>
 #include "mlx5_core.h"
 #include "eswitch.h"
@@ -28,14 +29,22 @@ static char *encap_to_str[] = {
 	[DEVLINK_ESWITCH_ENCAP_MODE_BASIC] = "basic",
 };
 
+static char *uplink_rep_mode_to_str[] = {
+	[MLX5_ESW_UPLINK_REP_MODE_NEW_NETDEV] = "new_netdev",
+	[MLX5_ESW_UPLINK_REP_MODE_NIC_NETDEV] = "nic_netdev",
+};
+
 struct devlink_compat_op {
 #ifdef HAVE_DEVLINK_ESWITCH_MODE_SET_EXTACK
+	int (*write_enum)(struct devlink *devlink, enum devlink_eswitch_encap_mode set, struct netlink_ext_ack *extack);
 	int (*write_u8)(struct devlink *devlink, u8 set, struct netlink_ext_ack *extack);
 	int (*write_u16)(struct devlink *devlink, u16 set, struct netlink_ext_ack *extack);
 #else
+	int (*write_enum)(struct devlink *devlink, enum devlink_eswitch_encap_mode set);
 	int (*write_u8)(struct devlink *devlink, u8 set);
 	int (*write_u16)(struct devlink *devlink, u16 set);
 #endif
+	int (*read_enum)(struct devlink *devlink, enum devlink_eswitch_encap_mode *read);
 	int (*read_u8)(struct devlink *devlink, u8 *read);
 	int (*read_u16)(struct devlink *devlink, u16 *read);
 	char **map;
@@ -59,11 +68,23 @@ static struct devlink_compat_op devlink_compat_ops[] =  {
 		.compat_name = "inline",
 	},
 	{
+#ifdef HAVE_DEVLINK_HAS_ESWITCH_ENCAP_MODE_SET_GET_WITH_ENUM
+		.read_enum = mlx5_devlink_eswitch_encap_mode_get,
+		.write_enum = mlx5_devlink_eswitch_encap_mode_set,
+#else
 		.read_u8 = mlx5_devlink_eswitch_encap_mode_get,
 		.write_u8 = mlx5_devlink_eswitch_encap_mode_set,
+#endif
 		.map = encap_to_str,
 		.map_size = ARRAY_SIZE(encap_to_str),
 		.compat_name = "encap",
+	},
+	{
+		.read_u8 = mlx5_devlink_eswitch_uplink_rep_mode_get,
+		.write_u8 = mlx5_devlink_eswitch_uplink_rep_mode_set,
+		.map = uplink_rep_mode_to_str,
+		.map_size = ARRAY_SIZE(uplink_rep_mode_to_str),
+		.compat_name = "uplink_rep_mode",
 	},
 };
 
@@ -84,6 +105,7 @@ static ssize_t esw_compat_read(struct kobject *kobj,
 	const char *entname = attr->attr.name;
 	struct devlink_compat_op *op = 0;
 	int i = 0, ret, len = 0;
+	enum devlink_eswitch_encap_mode read_enum;
 	u8 read8;
 	u16 read;
 
@@ -97,9 +119,12 @@ static ssize_t esw_compat_read(struct kobject *kobj,
 
 	if (op->read_u16) {
 		ret = op->read_u16(devlink, &read);
-	} else {
+	} else if (op->read_u8) {
 		ret = op->read_u8(devlink, &read8);
 		read = read8;
+	} else {
+		ret = op->read_enum(devlink, &read_enum);
+		read = read_enum;
 	}
 
 	if (ret < 0)
@@ -159,8 +184,14 @@ static ssize_t esw_compat_write(struct kobject *kobj,
 				    , &ack
 #endif
 				    );
-	else
+	else if (op->write_u8)
 		ret = op->write_u8(devlink, set
+#ifdef HAVE_DEVLINK_ESWITCH_MODE_SET_EXTACK
+				   , &ack
+#endif
+				   );
+	else
+		ret = op->write_enum(devlink, set
 #ifdef HAVE_DEVLINK_ESWITCH_MODE_SET_EXTACK
 				   , &ack
 #endif

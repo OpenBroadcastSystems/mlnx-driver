@@ -382,7 +382,9 @@ struct mlx5_fc *mlx5_fc_create(struct mlx5_core_dev *dev, bool aging)
 {
 	struct mlx5_fc *counter = mlx5_fc_acquire(dev, aging);
 	struct mlx5_fc_stats *fc_stats = &dev->priv.fc_stats;
+#ifdef USE_IDR
 	int err;
+#endif
 
 	if (IS_ERR(counter))
 		return counter;

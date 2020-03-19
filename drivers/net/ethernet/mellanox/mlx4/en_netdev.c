@@ -3563,6 +3563,22 @@ static netdev_features_t mlx4_en_fix_features(struct net_device *netdev,
 	else
 		features &= ~NETIF_F_HW_VLAN_STAG_RX;
 
+#ifdef HAVE_NETIF_F_RXFCS
+	/* LRO/HW-GRO features cannot be combined with RX-FCS */
+	if (features & NETIF_F_RXFCS) {
+		if (features & NETIF_F_LRO) {
+			netdev_warn(netdev, "Dropping LRO feature since RX-FCS is requested\n");
+			features &= ~NETIF_F_LRO;
+		}
+#ifdef HAVE_NETIF_F_GRO_HW
+		if (features & NETIF_F_GRO_HW) {
+			netdev_warn(netdev, "Dropping HW-GRO feature since RX-FCS is requested\n");
+			features &= ~NETIF_F_GRO_HW;
+		}
+#endif
+	}
+#endif
+
 	return features;
 }
 #endif
@@ -4184,7 +4200,8 @@ static struct net_device_ops mlx4_netdev_base_ops = {
 #if defined(HAVE_NDO_SETUP_TC_4_PARAMS) || \
     defined(HAVE_NDO_SETUP_TC_TAKES_CHAIN_INDEX) || \
     defined(HAVE_TC_FLOWER_OFFLOAD) && \
-    !defined(CONFIG_COMPAT_CLS_FLOWER_MOD) || defined(CONFIG_COMPAT_KERNEL_4_14)
+    !defined(CONFIG_COMPAT_CLS_FLOWER_MOD) || defined(CONFIG_COMPAT_KERNEL_4_14) || \
+    defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE)
 	.ndo_setup_tc		= __mlx4_en_setup_tc,
 #else
 	.ndo_setup_tc           = mlx4_en_setup_tc,

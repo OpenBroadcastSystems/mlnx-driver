@@ -2,6 +2,9 @@
 /* Copyright (c) 2019 Mellanox Technologies. */
 
 #include <linux/netdevice.h>
+#ifdef HAVE_FIB_INFO_NH
+#include <net/nexthop.h>
+#endif
 #include <net/ip_fib.h>
 #include "mlx5_core.h"
 #include "eswitch.h"
@@ -263,6 +266,9 @@ static int mlx5_lag_fib_event(struct notifier_block *nb,
 	struct fib_entry_notifier_info *fen_info;
 	struct fib_nh_notifier_info *fnh_info;
 	struct fib_info *fi;
+#ifdef HAVE_FIB_INFO_NH
+	struct net_device *fib_dev;
+#endif
 
 	if (info->family != AF_INET)
 		return NOTIFY_DONE;
@@ -278,8 +284,14 @@ static int mlx5_lag_fib_event(struct notifier_block *nb,
 		fen_info = container_of(info, struct fib_entry_notifier_info,
 					info);
 		fi = fen_info->fi;
+#ifdef HAVE_FIB_INFO_NH
+		fib_dev = fib_info_nh(fen_info->fi, 0)->fib_nh_dev;
+		if (fib_dev != ldev->pf[0].netdev &&
+		    fib_dev != ldev->pf[1].netdev) {
+#else
 		if (fi->fib_dev != ldev->pf[0].netdev &&
 		    fi->fib_dev != ldev->pf[1].netdev) {
+#endif
 			return NOTIFY_DONE;
 		}
 		fib_work = mlx5_lag_init_fib_work(ldev, event);

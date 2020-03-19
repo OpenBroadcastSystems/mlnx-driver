@@ -471,6 +471,9 @@ static void nvme_loop_shutdown_ctrl(struct nvme_loop_ctrl *ctrl, bool shutdown)
 		nvme_stop_queues(&ctrl->ctrl);
 		blk_mq_tagset_busy_iter(&ctrl->tag_set,
 					nvme_cancel_request, &ctrl->ctrl);
+#ifdef HAVE_MQ_RQ_STATE
+		blk_mq_tagset_wait_completed_request(&ctrl->tag_set);
+#endif
 		nvme_loop_destroy_io_queues(ctrl);
 	}
 
@@ -486,6 +489,9 @@ static void nvme_loop_shutdown_ctrl(struct nvme_loop_ctrl *ctrl, bool shutdown)
 #endif
 	blk_mq_tagset_busy_iter(&ctrl->admin_tag_set,
 				nvme_cancel_request, &ctrl->ctrl);
+#ifdef HAVE_MQ_RQ_STATE
+	blk_mq_tagset_wait_completed_request(&ctrl->admin_tag_set);
+#endif
 #ifdef HAVE_BLK_MQ_UNQUIESCE_QUEUE
 	blk_mq_unquiesce_queue(ctrl->ctrl.admin_q);
 #endif
