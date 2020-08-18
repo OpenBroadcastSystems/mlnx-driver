@@ -23,7 +23,7 @@ struct iscsit_transport {
 	int (*iscsit_setup_np)(struct iscsi_np *, struct __kernel_sockaddr_storage *);
 	int (*iscsit_accept_np)(struct iscsi_np *, struct iscsi_conn *);
 	void (*iscsit_free_np)(struct iscsi_np *);
-#if defined(CONFIG_COMPAT_ISCSIT_WAIT_CONN)
+#ifdef CONFIG_COMPAT_ISCSIT_WAIT_CONN
 	void (*iscsit_wait_conn)(struct iscsi_conn *);
 #endif
 	void (*iscsit_free_conn)(struct iscsi_conn *);

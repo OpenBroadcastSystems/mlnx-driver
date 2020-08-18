@@ -3,6 +3,7 @@
 
 #include "health.h"
 #include "params.h"
+#include "../devlink.h"
 
 static int mlx5e_query_rq_state(struct mlx5_core_dev *dev, u32 rqn, u8 *state)
 {
@@ -90,7 +91,7 @@ static int mlx5e_rx_reporter_err_icosq_cqe_recover(void *ctx)
 		goto out;
 
 	mlx5e_reset_icosq_cc_pc(icosq);
-	mlx5e_free_rx_descs(rq);
+	mlx5e_free_rx_in_progress_descs(rq);
 	clear_bit(MLX5E_SQ_STATE_RECOVERING, &icosq->state);
 	mlx5e_activate_icosq(icosq);
 	mlx5e_activate_rq(rq);
@@ -139,15 +140,8 @@ static int mlx5e_rx_reporter_err_rq_cqe_recover(void *ctx)
 		goto out;
 	}
 
-	if (state == MLX5_RQC_STATE_ERR)
-		mlx5_core_warn_once(mdev, "RQ recovery on [rqn=0x%x, ix=0x%x] was skipped\n",
-				    rq->rqn, rq->channel->ix);
-	/* Work around FW issue which indicates queue in error state
-	 * while queue is in flushing. Recovering while queue is not
-	 * in error state, cause bad page state. Avoid recovery
-	 * altogether until FW issue is resolved.
-	 */
-	goto out;
+	if (state != MLX5_RQC_STATE_ERR)
+		goto out;
 
 	mlx5e_deactivate_rq(rq);
 	mlx5e_free_rx_descs(rq);
@@ -354,9 +348,9 @@ static int mlx5e_rx_reporter_dump_from_ctx(struct mlx5e_priv *priv,
 static int mlx5e_rx_reporter_dump(struct devlink_health_reporter *reporter,
 				  struct devlink_fmsg *fmsg, void *context
 #ifdef HAVE_HEALTH_REPORTER_RECOVER_HAS_EXTACK
-				  , struct netlink_ext_ack *extack
+                                  , struct netlink_ext_ack *extack
 #endif
-				  )
+                                 )
 {
 	struct mlx5e_priv *priv = devlink_health_reporter_priv(reporter);
 	struct mlx5e_err_ctx *err_ctx = context;
@@ -473,7 +467,7 @@ static int mlx5e_rx_reporter_diagnose(struct devlink_health_reporter *reporter,
 
 	generic_rq = &priv->channels.c[0]->rq;
 	rq_sz = mlx5e_rqwq_get_size(generic_rq);
-	rq_stride = BIT(mlx5e_mpwqe_get_log_stride_size(priv->mdev, params));
+	rq_stride = BIT(mlx5e_mpwqe_get_log_stride_size(priv->mdev, params, NULL));
 
 	err = mlx5e_reporter_named_obj_nest_start(fmsg, "Common config");
 	if (err)
@@ -586,8 +580,8 @@ static const struct devlink_health_reporter_ops mlx5_rx_reporter_ops = {
 };
 
 #define MLX5E_REPORTER_RX_GRACEFUL_PERIOD 500
-#endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
 
+#endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
 int mlx5e_reporter_rx_create(struct mlx5e_priv *priv)
 {
 #ifndef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
@@ -618,4 +612,5 @@ void mlx5e_reporter_rx_destroy(struct mlx5e_priv *priv)
 #ifdef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
 	devlink_health_reporter_destroy(priv->rx_reporter);
 #endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
+	priv->rx_reporter = NULL;
 }

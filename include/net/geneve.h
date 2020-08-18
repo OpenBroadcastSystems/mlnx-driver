@@ -16,7 +16,7 @@
 static inline bool netif_is_geneve(const struct net_device *dev)
 {
 	return dev->rtnl_link_ops &&
-		!strcmp(dev->rtnl_link_ops->kind, "geneve");
+	       !strcmp(dev->rtnl_link_ops->kind, "geneve");
 }
 #endif
 

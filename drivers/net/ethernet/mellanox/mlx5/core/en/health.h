@@ -11,8 +11,7 @@
 
 static inline bool cqe_syndrome_needs_recover(u8 syndrome)
 {
-	return syndrome == MLX5_CQE_SYNDROME_LOCAL_LENGTH_ERR ||
-	       syndrome == MLX5_CQE_SYNDROME_LOCAL_QP_OP_ERR ||
+	return syndrome == MLX5_CQE_SYNDROME_LOCAL_QP_OP_ERR ||
 	       syndrome == MLX5_CQE_SYNDROME_LOCAL_PROT_ERR ||
 	       syndrome == MLX5_CQE_SYNDROME_WR_FLUSH_ERR;
 }
@@ -59,49 +58,5 @@ int mlx5e_health_rsc_fmsg_dump(struct mlx5e_priv *priv, struct mlx5_rsc_key *key
 			       struct devlink_fmsg *fmsg);
 int mlx5e_health_queue_dump(struct mlx5e_priv *priv, struct devlink_fmsg *fmsg,
 			    int queue_idx, char *lbl);
-
-#ifndef HAVE_DEVLINK_FMSG_BINARY_PUT
-
-#include <net/genetlink.h>
-#include <linux/genetlink.h>
-#include <linux/netlink.h>
-
-#define DEVLINK_FMSG_MAX_SIZE (GENLMSG_DEFAULT_SIZE - GENL_HDRLEN - NLA_HDRLEN)
-
-struct devlink_fmsg {
-        struct list_head item_list;
-};
-
-struct devlink_fmsg_item {
-        struct list_head list;
-        int attrtype;
-        u8 nla_type;
-        u16 len;
-        int value[0];
-};
-
-static inline int devlink_fmsg_binary_put(struct devlink_fmsg *fmsg,
-                                  const void *value, u16 value_len)
-{
-        struct devlink_fmsg_item *item;
-
-        if (value_len > DEVLINK_FMSG_MAX_SIZE)
-                return -EMSGSIZE;
-
-        item = kzalloc(sizeof(*item) + value_len, GFP_KERNEL);
-        if (!item)
-                return -ENOMEM;
-
-        item->nla_type = NLA_BINARY;
-        item->len = value_len;
-        item->attrtype = DEVLINK_ATTR_FMSG_OBJ_VALUE_DATA;
-        memcpy(&item->value, value, item->len);
-        list_add_tail(&item->list, &fmsg->item_list);
-
-        return 0;
-}
-#endif /* HAVE_DEVLINK_FMSG_BINARY_PUT */
-
 #endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
-
 #endif

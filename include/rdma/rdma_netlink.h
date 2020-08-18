@@ -6,12 +6,18 @@
 #include <linux/netlink.h>
 #include <uapi/rdma/rdma_netlink.h>
 
+enum {
+	RDMA_NLDEV_ATTR_EMPTY_STRING = 1,
+	RDMA_NLDEV_ATTR_ENTRY_STRLEN = 16,
+	RDMA_NLDEV_ATTR_CHARDEV_TYPE_SIZE = 32,
+};
+
 struct rdma_nl_cbs {
 #ifdef HAVE_NETLINK_EXT_ACK
-	int (*doit)(struct sk_buff *skb, struct nlmsghdr *nlh,
-			struct netlink_ext_ack *extack);
+        int (*doit)(struct sk_buff *skb, struct nlmsghdr *nlh,
+                        struct netlink_ext_ack *extack);
 #else
-	int (*doit)(struct sk_buff *skb, struct nlmsghdr *nlh);
+        int (*doit)(struct sk_buff *skb, struct nlmsghdr *nlh);
 #endif
 	int (*dump)(struct sk_buff *skb, struct netlink_callback *nlcb);
 	u8 flags;
@@ -118,4 +124,6 @@ void rdma_link_register(struct rdma_link_ops *ops);
 void rdma_link_unregister(struct rdma_link_ops *ops);
 
 #define MODULE_ALIAS_RDMA_LINK(type) MODULE_ALIAS("rdma-link-" type)
+#define MODULE_ALIAS_RDMA_CLIENT(type) MODULE_ALIAS("rdma-client-" type)
+
 #endif /* _RDMA_NETLINK_H */

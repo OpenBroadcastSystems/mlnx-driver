@@ -53,15 +53,12 @@ do
 	let i++
 done
 
-# W/A for --with-innova-ipsec flag opens features (not adding new module)
-if (echo "$configure_options" | grep -q "with-innova-ipsec" 2>/dev/null); then
-	echo '#--with-innova-ipsec'
-fi
-
-# W/A for --with-mlx5-ipsec flag opens features (not adding new module)
-if (echo "$configure_options" | grep -q "with-mlx5-ipsec" 2>/dev/null); then
-	echo '#--with-mlx5-ipsec'
-fi
+EXTRA_OPTIONS="--with-innova-ipsec --with-mlx5-ipsec --with-gds --without-gds"
+for option in $EXTRA_OPTIONS; do
+	if echo "$configure_options" | grep -q -- "$option"; then
+		echo "#:# ExtraOption $option"
+	fi
+done
 
 echo MAKE=\"./ofed_scripts/pre_build.sh \$kernelver \$kernel_source_dir $PACKAGE_NAME $PACKAGE_VERSION\"
 echo CLEAN=\"make clean\"

@@ -18,11 +18,8 @@ static int mlx5e_tc_tun_calc_hlen_gretap(struct mlx5e_encap_entry *e)
 
 static int mlx5e_tc_tun_init_encap_attr_gretap(struct net_device *tunnel_dev,
 					       struct mlx5e_priv *priv,
-					       struct mlx5e_encap_entry *e
-#ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
-					       , struct netlink_ext_ack *extack
-#endif
-					      )
+					       struct mlx5e_encap_entry *e,
+					       struct netlink_ext_ack *extack)
 {
 	e->tunnel = &gre_tunnel;
 	e->reformat_type = MLX5_REFORMAT_TYPE_L2_TO_NVGRE;
@@ -59,19 +56,13 @@ static int mlx5e_gen_ip_tunnel_header_gretap(char buf[],
 
 static int mlx5e_tc_tun_parse_gretap(struct mlx5e_priv *priv,
 				     struct mlx5_flow_spec *spec,
-				     struct tc_cls_flower_offload *f,
+				     struct flow_cls_offload *f,
 				     void *headers_c,
-				     void *headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-				     , struct flow_rule *rule
-#endif
-							  )
+				     void *headers_v)
 {
 	void *misc_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria, misc_parameters);
 	void *misc_v = MLX5_ADDR_OF(fte_match_param, spec->match_value, misc_parameters);
-#ifdef HAVE_TC_SETUP_FLOW_ACTION
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
-#endif
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 
 	MLX5_SET_TO_ONES(fte_match_set_lyr_2_4, headers_c, ip_protocol);
 	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol, IPPROTO_GRE);

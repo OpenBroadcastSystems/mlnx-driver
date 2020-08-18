@@ -238,8 +238,8 @@ static int mlx5i_get_link_ksettings(struct net_device *netdev,
 
 	return 0;
 }
-
 #endif
+
 #ifdef HAVE_ETHTOOL_GET_SET_SETTINGS
 static int mlx5i_get_settings(struct net_device *netdev,
 			      struct ethtool_cmd *ecmd)
@@ -268,7 +268,6 @@ static int mlx5i_get_settings(struct net_device *netdev,
 	return 0;
 }
 #endif
-
 #ifndef HAVE_NETDEV_HW_FEATURES
 #if defined(HAVE_GET_SET_FLAGS) && defined(CONFIG_COMPAT_LRO_ENABLED_IPOIB)
 int mlx5i_set_flags(struct net_device *dev, u32 data)
@@ -307,8 +306,14 @@ static u32 mlx5i_get_rx_csum(struct net_device *dev)
 }
 #endif
 #endif
+ 
 
 const struct ethtool_ops mlx5i_ethtool_ops = {
+#ifdef HAVE_SUPPORTED_COALESCE_PARAM
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+				     ETHTOOL_COALESCE_MAX_FRAMES |
+				     ETHTOOL_COALESCE_USE_ADAPTIVE,
+#endif
 	.get_drvinfo        = mlx5i_get_drvinfo,
 	.get_strings        = mlx5i_get_strings,
 	.get_sset_count     = mlx5i_get_sset_count,

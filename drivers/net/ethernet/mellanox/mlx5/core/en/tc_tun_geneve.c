@@ -22,18 +22,12 @@ static int mlx5e_tc_tun_calc_hlen_geneve(struct mlx5e_encap_entry *e)
 }
 
 static int mlx5e_tc_tun_check_udp_dport_geneve(struct mlx5e_priv *priv,
-					       struct tc_cls_flower_offload *f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					      , struct flow_rule *rule
-#endif
-					     )
+					       struct flow_cls_offload *f)
 
 {
-#ifdef HAVE_TC_SETUP_FLOW_ACTION
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
-#endif
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 #ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
-	struct netlink_ext_ack *extack = f->common.extack;
+       struct netlink_ext_ack *extack = f->common.extack;
 #endif
 	struct flow_match_ports enc_ports;
 
@@ -61,39 +55,24 @@ static int mlx5e_tc_tun_check_udp_dport_geneve(struct mlx5e_priv *priv,
 
 static int mlx5e_tc_tun_parse_udp_ports_geneve(struct mlx5e_priv *priv,
 					       struct mlx5_flow_spec *spec,
-					       struct tc_cls_flower_offload *f,
+					       struct flow_cls_offload *f,
 					       void *headers_c,
-					       void *headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					       , struct flow_rule *rule
-#endif
-					      )
+					       void *headers_v)
 {
 	int err;
 
-	err = mlx5e_tc_tun_parse_udp_ports(priv, spec, f, headers_c, headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					   , rule
-#endif
-					  );
+	err = mlx5e_tc_tun_parse_udp_ports(priv, spec, f, headers_c, headers_v);
 
 	if (err)
 		return err;
 
-	return mlx5e_tc_tun_check_udp_dport_geneve(priv, f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-		, rule
-#endif
-		);
+	return mlx5e_tc_tun_check_udp_dport_geneve(priv, f);
 }
 
 static int mlx5e_tc_tun_init_encap_attr_geneve(struct net_device *tunnel_dev,
 					       struct mlx5e_priv *priv,
-					       struct mlx5e_encap_entry *e
-#ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
-					       , struct netlink_ext_ack *extack
-#endif
-					      )
+					       struct mlx5e_encap_entry *e,
+					       struct netlink_ext_ack *extack)
 {
 	e->tunnel = &geneve_tunnel;
 
@@ -151,17 +130,11 @@ static int mlx5e_gen_ip_tunnel_header_geneve(char buf[],
 
 static int mlx5e_tc_tun_parse_geneve_vni(struct mlx5e_priv *priv,
 					 struct mlx5_flow_spec *spec,
-					 struct tc_cls_flower_offload *f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					 , struct flow_rule *rule
-#endif
-					)
+					 struct flow_cls_offload *f)
 {
-#ifdef HAVE_TC_SETUP_FLOW_ACTION
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
-#endif
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 #ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
-	struct netlink_ext_ack *extack = f->common.extack;
+       struct netlink_ext_ack *extack = f->common.extack;
 #endif
 	struct flow_match_enc_keyid enc_keyid;
 	void *misc_c, *misc_v;
@@ -193,17 +166,11 @@ static int mlx5e_tc_tun_parse_geneve_vni(struct mlx5e_priv *priv,
 
 static int mlx5e_tc_tun_parse_geneve_options(struct mlx5e_priv *priv,
 					     struct mlx5_flow_spec *spec,
-					     struct tc_cls_flower_offload *f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					     , struct flow_rule *rule
-#endif
-					    )
+					     struct flow_cls_offload *f)
 {
 	u8 max_tlv_option_data_len = MLX5_CAP_GEN(priv->mdev, max_geneve_tlv_option_data_len);
 	u8 max_tlv_options = MLX5_CAP_GEN(priv->mdev, max_geneve_tlv_options);
-#ifdef HAVE_TC_SETUP_FLOW_ACTION
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
-#endif
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 #ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
 	struct netlink_ext_ack *extack = f->common.extack;
 #endif
@@ -338,7 +305,7 @@ static int mlx5e_tc_tun_parse_geneve_options(struct mlx5e_priv *priv,
 
 static int mlx5e_tc_tun_parse_geneve_params(struct mlx5e_priv *priv,
 					    struct mlx5_flow_spec *spec,
-					    struct tc_cls_flower_offload *f)
+					    struct flow_cls_offload *f)
 {
 	void *misc_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria, misc_parameters);
 	void *misc_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,  misc_parameters);
@@ -371,13 +338,9 @@ static int mlx5e_tc_tun_parse_geneve_params(struct mlx5e_priv *priv,
 
 static int mlx5e_tc_tun_parse_geneve(struct mlx5e_priv *priv,
 				     struct mlx5_flow_spec *spec,
-				     struct tc_cls_flower_offload *f,
+				     struct flow_cls_offload *f,
 				     void *headers_c,
-				     void *headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-				     , struct flow_rule *rule
-#endif
-				    )
+				     void *headers_v)
 {
 	int err;
 
@@ -385,20 +348,12 @@ static int mlx5e_tc_tun_parse_geneve(struct mlx5e_priv *priv,
 	if (err)
 		return err;
 
-	err = mlx5e_tc_tun_parse_geneve_vni(priv, spec, f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					    , rule
-#endif
-					   );
+	err = mlx5e_tc_tun_parse_geneve_vni(priv, spec, f);
 
 	if (err)
 		return err;
 
-	return mlx5e_tc_tun_parse_geneve_options(priv, spec, f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-						 , rule
-#endif
-						);
+	return mlx5e_tc_tun_parse_geneve_options(priv, spec, f);
 
 }
 

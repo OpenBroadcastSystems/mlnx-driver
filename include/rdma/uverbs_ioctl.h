@@ -38,7 +38,9 @@
 #include <rdma/rdma_user_ioctl.h>
 #include <rdma/ib_user_ioctl_verbs.h>
 #include <rdma/ib_user_ioctl_cmds.h>
-#include <linux/bits.h>
+#include <linux/vfio.h>
+
+
 /*
  * =======================================
  *	Verbs action specifications
@@ -380,6 +382,12 @@ struct uapi_definition {
 		size_t needs_fn_offset;
 	};
 };
+
+#ifdef offsetofend
+#undef offsetofend
+#define offsetofend(TYPE, MEMBER) \
+	       (offsetof(TYPE, MEMBER)     + sizeof(((TYPE *)0)->MEMBER))
+#endif
 
 /* Define things connected to object_id */
 #define DECLARE_UVERBS_OBJECT(_object_id, ...)                                 \

@@ -44,7 +44,7 @@ int mlx5e_reporter_cq_diagnose(struct mlx5e_cq *cq, struct devlink_fmsg *fmsg)
 	void *cqc;
 	int err;
 
-	err = mlx5_core_query_cq(priv->mdev, &cq->mcq, out, sizeof(out));
+	err = mlx5_core_query_cq(priv->mdev, &cq->mcq, out);
 	if (err)
 		return err;
 
@@ -202,18 +202,27 @@ int mlx5e_health_report(struct mlx5e_priv *priv,
 			struct devlink_health_reporter *reporter, char *err_str,
 			struct mlx5e_err_ctx *err_ctx)
 {
-	/* In kernels below 2.6.36, netdev_err required at least 3 params */
-	netdev_err(priv->netdev, "%s", err_str);
+	netdev_err(priv->netdev, err_str);
 
 	if (!reporter)
 		return err_ctx->recover(err_ctx->ctx);
 
 #ifdef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
-	return devlink_health_report(reporter, err_str, err_ctx);
+       return devlink_health_report(reporter, err_str, err_ctx);
 #else
 	return 0;
 #endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
 }
+
+#ifndef HAVE_DEVLINK_FMSG_BINARY_PUT
+#ifdef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
+static int devlink_fmsg_binary_put(struct devlink_fmsg *fmsg, const void *value,
+				   u16 value_len)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
+#endif
 
 #ifdef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
 #define MLX5_HEALTH_DEVLINK_MAX_SIZE 1024
@@ -222,8 +231,8 @@ static int mlx5e_health_rsc_fmsg_binary(struct devlink_fmsg *fmsg,
 
 {
 	u32 data_size;
+	int err = 0;
 	u32 offset;
-	int err;
 
 	for (offset = 0; offset < value_len; offset += data_size) {
 		data_size = value_len - offset;
@@ -320,4 +329,3 @@ int mlx5e_health_queue_dump(struct mlx5e_priv *priv, struct devlink_fmsg *fmsg,
 	return devlink_fmsg_obj_nest_end(fmsg);
 }
 #endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
-

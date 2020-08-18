@@ -18,18 +18,12 @@ static int mlx5e_tc_tun_calc_hlen_vxlan(struct mlx5e_encap_entry *e)
 }
 
 static int mlx5e_tc_tun_check_udp_dport_vxlan(struct mlx5e_priv *priv,
-					      struct tc_cls_flower_offload *f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					      , struct flow_rule *rule
-#endif
-					     )
+					      struct flow_cls_offload *f)
 
 {
-#ifdef HAVE_TC_SETUP_FLOW_ACTION
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
-#endif
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 #ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
-	struct netlink_ext_ack *extack = f->common.extack;
+       struct netlink_ext_ack *extack = f->common.extack;
 #endif
 	struct flow_match_ports enc_ports;
 
@@ -57,39 +51,23 @@ static int mlx5e_tc_tun_check_udp_dport_vxlan(struct mlx5e_priv *priv,
 
 static int mlx5e_tc_tun_parse_udp_ports_vxlan(struct mlx5e_priv *priv,
 					      struct mlx5_flow_spec *spec,
-					      struct tc_cls_flower_offload *f,
+					      struct flow_cls_offload *f,
 					      void *headers_c,
-					      void *headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					      , struct flow_rule *rule
-#endif
-					     )
-
+					      void *headers_v)
 {
 	int err = 0;
 
-	err = mlx5e_tc_tun_parse_udp_ports(priv, spec, f, headers_c, headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-					   , rule
-#endif
-					   );
+	err = mlx5e_tc_tun_parse_udp_ports(priv, spec, f, headers_c, headers_v);
 	if (err)
 		return err;
 
-	return mlx5e_tc_tun_check_udp_dport_vxlan(priv, f
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-						  , rule
-#endif
-						 );
+	return mlx5e_tc_tun_check_udp_dport_vxlan(priv, f);
 }
 
 static int mlx5e_tc_tun_init_encap_attr_vxlan(struct net_device *tunnel_dev,
 					      struct mlx5e_priv *priv,
-					      struct mlx5e_encap_entry *e
-#ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
-					      , struct netlink_ext_ack *extack
-#endif
-					     )
+					      struct mlx5e_encap_entry *e,
+					      struct netlink_ext_ack *extack)
 {
 	int dst_port = be16_to_cpu(e->tun_info->key.tp_dst);
 
@@ -131,17 +109,11 @@ static int mlx5e_gen_ip_tunnel_header_vxlan(char buf[],
 
 static int mlx5e_tc_tun_parse_vxlan(struct mlx5e_priv *priv,
 				    struct mlx5_flow_spec *spec,
-				    struct tc_cls_flower_offload *f,
+				    struct flow_cls_offload *f,
 				    void *headers_c,
-				    void *headers_v
-#ifndef HAVE_TC_SETUP_FLOW_ACTION
-				    , struct flow_rule *rule
-#endif
-						   )
+				    void *headers_v)
 {
-#ifdef HAVE_TC_SETUP_FLOW_ACTION
-	struct flow_rule *rule = tc_cls_flower_offload_flow_rule(f);
-#endif
+	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
 #ifdef HAVE_TC_CLS_OFFLOAD_EXTACK
 	struct netlink_ext_ack *extack = f->common.extack;
 #endif

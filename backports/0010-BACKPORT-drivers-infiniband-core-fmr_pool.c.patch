@@ -1,7 +1,7 @@
-From: Alaa Hleihel <alaa@mellanox.com>
+From: Valentine Fatiev <valentinef@mellanox.com>
 Subject: [PATCH] BACKPORT: drivers/infiniband/core/fmr_pool.c
 
-Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
+Change-Id: I6ad84dc13bc76d45dc510d6439c340d4fdc9a4d9
 ---
  drivers/infiniband/core/fmr_pool.c | 58 +++++++++++++++++++++++++++++++++++++-
  1 file changed, 57 insertions(+), 1 deletion(-)
@@ -37,7 +37,7 @@ Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
  		if (io_virtual_address == fmr->io_virtual_address &&
  		    page_list_len      == fmr->page_list_len      &&
  		    !memcmp(page_list, fmr->page_list,
-@@ -175,6 +180,7 @@ static void ib_fmr_batch_release(struct
+@@ -168,6 +173,7 @@ static void ib_fmr_batch_release(struct
  	spin_unlock_irq(&pool->pool_lock);
  }
  
@@ -45,7 +45,7 @@ Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
  static void ib_fmr_cleanup_func(struct kthread_work *work)
  {
  	struct ib_fmr_pool *pool = container_of(work, struct ib_fmr_pool, work);
-@@ -189,6 +195,32 @@ static void ib_fmr_cleanup_func(struct k
+@@ -182,6 +188,32 @@ static void ib_fmr_cleanup_func(struct k
  	if (atomic_read(&pool->flush_ser) - atomic_read(&pool->req_ser) < 0)
  		kthread_queue_work(pool->worker, &pool->work);
  }
@@ -78,15 +78,15 @@ Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
  
  /**
   * ib_create_fmr_pool - Create an FMR pool
-@@ -257,6 +289,7 @@ struct ib_fmr_pool *ib_create_fmr_pool(s
+@@ -250,6 +282,7 @@ struct ib_fmr_pool *ib_create_fmr_pool(s
  	atomic_set(&pool->flush_ser, 0);
  	init_waitqueue_head(&pool->force_wait);
  
 +#ifdef HAVE_KTHREAD_QUEUE_WORK
- 	pool->worker = kthread_create_worker(0, "ib_fmr(%s)", device->name);
+ 	pool->worker =
+ 		kthread_create_worker(0, "ib_fmr(%s)", dev_name(&device->dev));
  	if (IS_ERR(pool->worker)) {
- 		pr_warn(PFX "couldn't start cleanup kthread worker\n");
-@@ -264,6 +297,17 @@ struct ib_fmr_pool *ib_create_fmr_pool(s
+@@ -258,6 +291,17 @@ struct ib_fmr_pool *ib_create_fmr_pool(s
  		goto out_free_pool;
  	}
  	kthread_init_work(&pool->work, ib_fmr_cleanup_func);
@@ -104,7 +104,7 @@ Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
  
  	{
  		struct ib_pool_fmr *fmr;
-@@ -328,7 +372,11 @@ void ib_destroy_fmr_pool(struct ib_fmr_p
+@@ -322,7 +366,11 @@ void ib_destroy_fmr_pool(struct ib_fmr_p
  	LIST_HEAD(fmr_list);
  	int                 i;
  
@@ -116,7 +116,7 @@ Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
  	ib_fmr_batch_release(pool);
  
  	i = 0;
-@@ -378,7 +426,11 @@ int ib_flush_fmr_pool(struct ib_fmr_pool
+@@ -372,7 +420,11 @@ int ib_flush_fmr_pool(struct ib_fmr_pool
  	spin_unlock_irq(&pool->pool_lock);
  
  	serial = atomic_inc_return(&pool->req_ser);
@@ -128,7 +128,7 @@ Change-Id: Ia740a06559e6f4619dad7e0f882ee3252cc5ff2d
  
  	if (wait_event_interruptible(pool->force_wait,
  				     atomic_read(&pool->flush_ser) - serial >= 0))
-@@ -490,7 +542,11 @@ int ib_fmr_pool_unmap(struct ib_pool_fmr
+@@ -484,7 +536,11 @@ void ib_fmr_pool_unmap(struct ib_pool_fm
  			list_add_tail(&fmr->list, &pool->dirty_list);
  			if (++pool->dirty_len >= pool->dirty_watermark) {
  				atomic_inc(&pool->req_ser);

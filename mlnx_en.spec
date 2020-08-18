@@ -40,7 +40,12 @@
 %global PYTHON3 %{RHEL8} || %{FEDORA3X}
 
 # Workaround: To be removed when mlnx_tune has python3 support:
-%global REMOVE_MLNX_TUNE  (!%{KMP}) && %{RHEL8}
+# mlnx_tune is a python2 script. Avoid generating dependencies
+# from it in some distributions to avoid dragging in a python2
+# dependency
+%if (!%{KMP}) && %{RHEL8}
+%global __requires_exclude_from mlnx_tune
+%endif
 
 %global IS_RHEL_VENDOR "%{_vendor}" == "redhat" || ("%{_vendor}" == "bclinux")
 
@@ -81,8 +86,8 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 5.0}
-%{!?_release: %global _release 1.0.0.0.0.g34c46d3}
+%{!?_version: %global _version 5.1}
+%{!?_release: %global _release 1.0.4.0.gc72091b}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 %if %{PYTHON3}
@@ -110,7 +115,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -118,7 +123,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -126,7 +131,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -134,14 +139,14 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
@@ -168,7 +173,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.0-1.0.0.0.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -254,9 +259,6 @@ for flavor in %{flavors_to_build}; do
 	%if "%{MEMTRACK}" == "1"
 		export MLNX_EN_PATCH_PARAMS="$MLNX_EN_PATCH_PARAMS --with-memtrack"
 	%endif
-	%if "%{MLX4}" == "0"
-		export MLNX_EN_PATCH_PARAMS="$MLNX_EN_PATCH_PARAMS --without-mlx4"
-	%endif
 	%if "%{MLX5}" == "0"
 		export MLNX_EN_PATCH_PARAMS="$MLNX_EN_PATCH_PARAMS --without-mlx5"
 	%endif
@@ -268,7 +270,6 @@ for flavor in %{flavors_to_build}; do
 	make V=0 %{?_smp_mflags}
 	cd -
 done
-gzip -c source/scripts/mlx4_en.7 > mlx4_en.7.gz
 
 cd source/ofed_scripts/utils
 %{mlnx_python} setup.py build
@@ -306,8 +307,6 @@ done
 %endif
 %endif
 
-install -D -m 644 mlx4_en.7.gz %{buildroot}/%{_mandir}/man7/mlx4_en.7.gz
-
 install -D -m 755 source/ofed_scripts/common_irq_affinity.sh %{buildroot}/%{_sbindir}/common_irq_affinity.sh
 install -D -m 755 source/ofed_scripts/set_irq_affinity.sh %{buildroot}/%{_sbindir}/set_irq_affinity.sh
 install -D -m 755 source/ofed_scripts/show_irq_affinity.sh %{buildroot}/%{_sbindir}/show_irq_affinity.sh
@@ -315,14 +314,11 @@ install -D -m 755 source/ofed_scripts/show_irq_affinity_hints.sh %{buildroot}/%{
 install -D -m 755 source/ofed_scripts/set_irq_affinity_bynode.sh %{buildroot}/%{_sbindir}/set_irq_affinity_bynode.sh
 install -D -m 755 source/ofed_scripts/set_irq_affinity_cpulist.sh %{buildroot}/%{_sbindir}/set_irq_affinity_cpulist.sh
 install -D -m 755 source/ofed_scripts/sysctl_perf_tuning %{buildroot}/sbin/sysctl_perf_tuning
-install -D -m 755 source/ofed_scripts/mlnx_eswitch_set %{buildroot}/sbin/mlnx_eswitch_set
-install -D -m 755 source/ofed_scripts/mlnx_net_rules %{buildroot}/sbin/mlnx_net_rules
-%if %{REMOVE_MLNX_TUNE}
-install -D -m 755 source/ofed_scripts/mlnx_tune %{buildroot}/usr/sbin/mlnx_tune
-%endif
+install -D -m 755 source/ofed_scripts/mlnx_bf_configure %{buildroot}/sbin/mlnx_bf_configure
+install -D -m 755 source/ofed_scripts/mlnx-sf %{buildroot}/sbin/mlnx-sf
 install -D -m 644 source/scripts/mlnx-en.conf %{buildroot}/etc/mlnx-en.conf
 install -D -m 755 source/scripts/mlnx-en.d %{buildroot}/etc/init.d/mlnx-en.d
-install -D -m 644 source/ofed_scripts/mlnx-eswitch.conf   %{buildroot}/etc/modprobe.d/mlnx-eswitch.conf
+install -D -m 644 source/ofed_scripts/mlnx-bf.conf   %{buildroot}/etc/modprobe.d/mlnx-bf.conf
 
 mkdir -p %{buildroot}/%{_prefix}/src
 cp -r source %{buildroot}/%{_prefix}/src/%{name}-%{version}
@@ -380,32 +376,11 @@ if [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
 fi
 
 # Update mlnx-en.conf
-%if "%{MLX4}" == "0"
-	sed -i 's/MLX4_LOAD=yes/MLX4_LOAD=no/' %{buildroot}/etc/mlnx-en.conf
-%endif
 %if "%{MLX5}" == "0"
 	sed -i 's/MLX5_LOAD=yes/MLX5_LOAD=no/' %{buildroot}/etc/mlnx-en.conf
 %endif
 
-%if "%{XENSERVER65}" == "1"
-	# mlx4_core fails to load on xenserver 6.5 with the following error:
-	# mlx4_core 0000:01:00.0: Failed to map MCG context memory, aborting
-	# mlx4_core: probe of 0000:01:00.0 failed with error -12
-	# This happens only when DMFS is used (module parameter log_num_mgm_entry < 0).
-	mkdir -p %{buildroot}/etc/modprobe.d
-	echo "# Module parameters for MLNX_OFED kernel modules" > %{buildroot}/etc/modprobe.d/mlnx_en.conf
-	echo "#" >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
-	echo "# Please don't edit this file. Create a new file under" >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
-	echo "# /etc/modprobe.d/ for your configurations." >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
-	echo "options mlx4_core log_num_mgm_entry_size=10" >> %{buildroot}/etc/modprobe.d/mlnx_en.conf
-%endif
-
 # end of install
-
-%postun doc
-if [ -f %{_mandir}/man7/mlx4_en.7.gz ]; then
-	exit 0
-fi
 
 %if "%{KMP}" != "1"
 %post -n mlnx_en
@@ -515,7 +490,6 @@ rm -rf %{buildroot}
 
 %files doc
 %defattr(-,root,root,-)
-%{_mandir}/man7/mlx4_en.7.gz
 
 %files sources
 %defattr(-,root,root,-)
@@ -523,7 +497,7 @@ rm -rf %{buildroot}
 
 %files utils -f ofed-files
 %defattr(-,root,root,-)
-%config(noreplace) /etc/modprobe.d/mlnx-eswitch.conf
+%config(noreplace) /etc/modprobe.d/mlnx-bf.conf
 %{_sbindir}/*
 /sbin/*
 %config(noreplace) /etc/mlnx-en.conf

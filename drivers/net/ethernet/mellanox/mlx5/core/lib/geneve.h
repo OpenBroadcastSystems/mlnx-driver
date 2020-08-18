@@ -18,7 +18,7 @@ int mlx5_geneve_tlv_option_add(struct mlx5_geneve *geneve, struct geneve_opt *op
 void mlx5_geneve_tlv_option_del(struct mlx5_geneve *geneve);
 
 #else /* CONFIG_MLX5_ESWITCH */
-
+struct geneve_opt;
 static inline struct mlx5_geneve
 *mlx5_geneve_create(struct mlx5_core_dev *mdev) { return NULL; }
 static inline void

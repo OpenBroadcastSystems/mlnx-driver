@@ -97,8 +97,6 @@ static int mlx5_cmd_dealloc_sf(struct mlx5_core_dev *mdev, u16 function_id)
 	return mlx5_cmd_exec(mdev, in, sizeof(in), out, sizeof(out));
 }
 
-static const struct devlink_ops sf_devlink_ops = {};
-
 static int alloc_sf_id(struct mlx5_sf_table *sf_table, u16 *sf_id)
 {
 	int ret = 0;
@@ -133,20 +131,24 @@ static u16 mlx5_sf_hw_id(const struct mlx5_core_dev *coredev, u16 sf_id)
 	return mlx5_sf_base_id(coredev) + sf_id;
 }
 
+u16 mlx5_sf_vport_to_id(const struct mlx5_core_dev *coredev, u16 vport_num)
+{
+	return vport_num - mlx5_sf_base_id(coredev);
+}
+
 /* Perform SF allocation using parent device BAR. */
 struct mlx5_sf *
 mlx5_sf_alloc(struct mlx5_core_dev *coredev, struct mlx5_sf_table *sf_table,
 	      struct device *dev)
 {
-	struct devlink *devlink;
 	phys_addr_t base_addr;
 	struct mlx5_sf *sf;
 	u16 hw_function_id;
 	u16 sf_id;
 	int ret;
 
-	devlink = devlink_alloc(&sf_devlink_ops, sizeof(*sf));
-	if (!devlink)
+	sf = kzalloc(sizeof(*sf), GFP_KERNEL);
+	if (!sf)
 		return ERR_PTR(-ENOMEM);
 
 	ret = alloc_sf_id(sf_table, &sf_id);
@@ -166,25 +168,13 @@ mlx5_sf_alloc(struct mlx5_core_dev *coredev, struct mlx5_sf_table *sf_table,
 	if (ret)
 		goto vport_err;
 
-	sf = devlink_priv(devlink);
 	sf->idx = sf_id;
 	sf->parent_dev = coredev;
-	sf->dev.device = dev;
-	sf->dev.pdev = coredev->pdev;
-	sf->dev.coredev_type = MLX5_COREDEV_SF;
 	base_addr = sf_table->base_address +
 			(sf_id << (sf_table->log_sf_bar_size + 12));
-	sf->dev.bar_addr = base_addr;
-	sf->dev.iseg_base = base_addr;
-
-	ret = devlink_register(devlink, dev);
-	if (ret)
-		goto devlink_err;
-
+	sf->bar_base_addr = base_addr;
 	return sf;
 
-devlink_err:
-	mlx5_eswitch_cleanup_sf_vport(coredev->priv.eswitch, hw_function_id);
 vport_err:
 	mlx5_core_disable_sf_hca(coredev, hw_function_id);
 enable_err:
@@ -192,23 +182,21 @@ enable_err:
 alloc_sf_err:
 	free_sf_id(sf_table, sf_id);
 id_err:
-	devlink_free(devlink);
+	kfree(sf);
 	return ERR_PTR(ret);
 }
 
 void mlx5_sf_free(struct mlx5_core_dev *coredev, struct mlx5_sf_table *sf_table,
 		  struct mlx5_sf *sf)
 {
-	struct devlink *devlink = mlx5_core_to_devlink(&sf->dev);
 	u16 hw_function_id;
 
 	hw_function_id = mlx5_sf_hw_id(coredev, sf->idx);
-	devlink_unregister(devlink);
 	mlx5_eswitch_cleanup_sf_vport(coredev->priv.eswitch, hw_function_id);
 	mlx5_core_disable_sf_hca(coredev, hw_function_id);
 	mlx5_cmd_dealloc_sf(coredev, hw_function_id);
 	free_sf_id(sf_table, sf->idx);
-	devlink_free(devlink);
+	kfree(sf);
 }
 
 u16 mlx5_get_free_sfs_locked(struct mlx5_core_dev *dev,
@@ -357,10 +345,10 @@ mlx5_sf_dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nents,
 static dma_addr_t
 mlx5_sf_dma_map_resource(struct device *dev, phys_addr_t phys_addr,
 			 size_t size, enum dma_data_direction dir,
-#ifdef HAVE_STRUCT_DMA_ATTRS
-			     struct dma_attrs *attrs)
+#ifdef HAVE_NDO_UNMAP_RESOURCE_GET_LONG_ATTRS
+			 unsigned long attrs)
 #else
-			     unsigned long attrs)
+			 struct dma_attrs *attrs)
 #endif
 {
 	return dma_map_resource(dev->parent, phys_addr, size, dir, attrs);
@@ -369,10 +357,10 @@ mlx5_sf_dma_map_resource(struct device *dev, phys_addr_t phys_addr,
 static void
 mlx5_sf_dma_unmap_resource(struct device *dev, dma_addr_t dma_handle,
 			   size_t size, enum dma_data_direction dir,
-#ifdef HAVE_STRUCT_DMA_ATTRS
-			   struct dma_attrs *attrs)
+#ifdef HAVE_NDO_UNMAP_RESOURCE_GET_LONG_ATTRS
+			 unsigned long attrs)
 #else
-			   unsigned long attrs)
+			 struct dma_attrs *attrs)
 #endif
 {
 	dma_unmap_resource(dev->parent, dma_handle, size, dir, attrs);
@@ -468,7 +456,7 @@ static void set_dma_params(struct mlx5_core_dev *coredev, struct device *dev)
 
 int mlx5_sf_load(struct mlx5_sf *sf)
 {
-	struct mlx5_core_dev *dev = &sf->dev;
+	struct mlx5_core_dev *dev = sf->dev;
 	struct mlx5_core_dev *parent_dev;
 	int err;
 
@@ -504,9 +492,36 @@ mdev_err:
 
 void mlx5_sf_unload(struct mlx5_sf *sf)
 {
-	mlx5_unload_one(&sf->dev, true);
-	mlx5_mdev_uninit(&sf->dev);
-	iounmap(sf->dev.iseg);
+	{
+	/* Yuk, This is done because remove_one()
+	 * invokes devlink_unregister() which must be mirror
+	 * of mlx5_load_one() which does devlink_register().
+	 * Code normally should be,
+	 * mlx5_load_one()
+	 *    devlink_register()
+	 *
+	 * mlx5_unload_one()
+	 *    devlin_unregister()
+	 * This is done incorrectly in upstream currently.
+	 * Correcting it, will result into lock dependency asserts
+	 * and deadlock described in
+	 * http://l-gerrit.mtl.labs.mlnx:8080/#/c/upstream/linux/+/281516/
+	 *
+	 * Assert on load_one() can be ignored because its false assert.
+	 * Its false because, devlink cannot reload a devlink device which
+	 * hasn't yet done devlink_register() while holding
+	 * interface_state_mutex.
+	 * To avoid this devlink user space commands must not take
+	 * devlink lock as proposed.
+	 */
+		struct devlink *devlink = priv_to_devlink(sf->dev);
+
+		mlx5_devlink_unregister(devlink);
+	}
+
+	mlx5_unload_one(sf->dev, true);
+	mlx5_mdev_uninit(sf->dev);
+	iounmap(sf->dev->iseg);
 }
 
 int mlx5_sf_set_mac(struct mlx5_sf *sf, u8 *mac)
@@ -533,6 +548,7 @@ int mlx5_sf_get_mac(struct mlx5_sf *sf, u8 *mac)
 	return ret;
 }
 
+#ifdef CONFIG_MLX5_ESWITCH
 struct net_device *mlx5_sf_get_netdev(struct mlx5_sf *sf)
 {
 	struct mlx5_core_dev *parent_dev = sf->parent_dev;
@@ -540,19 +556,18 @@ struct net_device *mlx5_sf_get_netdev(struct mlx5_sf *sf)
 	u16 vport_num;
 
 	vport_num = mlx5_sf_hw_id(parent_dev, sf->idx);
-
-#ifdef CONFIG_MLX5_ESWITCH                                                                     
 	ndev = mlx5_eswitch_get_proto_dev(parent_dev->priv.eswitch,
 					  vport_num, REP_ETH);
-#endif
 	if (!ndev)
 		return ERR_PTR(-ENODEV);
+
 	/* FIXME This is racy. get_proto_dev()) is poor API
 	 * without a esw lock.
 	 */
 	dev_hold(ndev);
 	return ndev;
 }
+#endif
 
 static int mlx5_cmd_set_sf_partitions(struct mlx5_core_dev *mdev, int n,
 				      u8 *parts)

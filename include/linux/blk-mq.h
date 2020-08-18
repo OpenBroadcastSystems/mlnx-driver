@@ -80,6 +80,11 @@ typedef int blk_status_t;
 #define BLK_STS_NEXUS		-EBADE
 #define BLK_STS_PROTECTION	-EILSEQ
 
+static inline int blk_status_to_errno(blk_status_t status)
+{
+        return status;
+}
+
 #endif /* HAVE_BLK_STATUS_T */
 
 #ifndef HAVE_BLK_PATH_ERROR
@@ -113,8 +118,8 @@ static inline int blk_mq_request_completed(struct request *rq)
 }
 #endif
 
-#if !defined(HAVE_BLK_MQ_TAGSET_WAIT_COMPLETED_REQUEST) && \
-	defined(HAVE_MQ_RQ_STATE)
+#ifndef HAVE_BLK_MQ_TAGSET_WAIT_COMPLETED_REQUEST
+#ifdef HAVE_MQ_RQ_STATE
 #ifdef HAVE_BLK_MQ_BUSY_TAG_ITER_FN_BOOL
 static inline bool blk_mq_tagset_count_completed_rqs(struct request *rq,
                         void *data, bool reserved)
@@ -145,6 +150,13 @@ blk_mq_tagset_wait_completed_request(struct blk_mq_tag_set *tagset)
        msleep(5);
    }
 }
-#endif
+#else
+static inline void
+blk_mq_tagset_wait_completed_request(struct blk_mq_tag_set *tagset)
+{
+	msleep(100);
+}
+#endif /* HAVE_MQ_RQ_STATE */
+#endif /* HAVE_BLK_MQ_TAGSET_WAIT_COMPLETED_REQUEST */
 
 #endif /* _COMPAT_LINUX_BLK_MQ_H */

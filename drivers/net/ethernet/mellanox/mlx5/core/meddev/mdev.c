@@ -8,6 +8,7 @@
 #include "mlx5_core.h"
 #include "meddev/sf.h"
 #include "eswitch.h"
+
 #ifdef CONFIG_MLX5_ESWITCH
 struct mlx5_mdev_table {
 	struct mlx5_sf_table sf_table;
@@ -146,7 +147,7 @@ mac_addr_show(struct device *dev, struct device_attribute *attr, char *buf)
 	if (ret)
 		return ret;
 
-	ret = sprintf(buf, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx\n",
+	ret = sprintf(buf, "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx\n",
 		      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 	return ret;
 }

@@ -34,13 +34,7 @@
 #define __MLX5_EN_TC_H__
 
 #include <net/pkt_cls.h>
-#ifdef HAVE_TCF_TUNNEL_INFO
-#include <net/ip_tunnels.h>
-#endif
-#if defined(HAVE_KERNEL_WITH_VXLAN_SUPPORT_ON)
-#include <net/vxlan.h>
-#endif
-#include "eswitch.h"
+#include "en.h"
 
 #define MLX5E_TC_FLOW_ID_MASK 0x0000ffff
 
@@ -51,158 +45,22 @@ enum {
 	MLX5E_TC_FLAG_EGRESS_BIT,
 	MLX5E_TC_FLAG_NIC_OFFLOAD_BIT,
 	MLX5E_TC_FLAG_ESW_OFFLOAD_BIT,
-	MLX5E_TC_FLAG_LAST_EXPORTED_BIT = MLX5E_TC_FLAG_ESW_OFFLOAD_BIT,
+	MLX5E_TC_FLAG_FT_OFFLOAD_BIT,
+	MLX5E_TC_FLAG_LAST_EXPORTED_BIT = MLX5E_TC_FLAG_FT_OFFLOAD_BIT,
 };
 
 #define MLX5_TC_FLAG(flag) BIT(MLX5E_TC_FLAG_##flag##_BIT)
-#define MLX5E_TC_FLOW_BASE (MLX5E_TC_FLAG_LAST_EXPORTED_BIT + 1)
 
-enum {
-	MLX5E_TC_FLOW_FLAG_INGRESS	= MLX5E_TC_FLAG_INGRESS_BIT,
-	MLX5E_TC_FLOW_FLAG_EGRESS	= MLX5E_TC_FLAG_EGRESS_BIT,
-	MLX5E_TC_FLOW_FLAG_ESWITCH	= MLX5E_TC_FLAG_ESW_OFFLOAD_BIT,
-	MLX5E_TC_FLOW_FLAG_NIC		= MLX5E_TC_FLAG_NIC_OFFLOAD_BIT,
-	MLX5E_TC_FLOW_FLAG_OFFLOADED	= MLX5E_TC_FLOW_BASE,
-	MLX5E_TC_FLOW_FLAG_HAIRPIN	= MLX5E_TC_FLOW_BASE + 1,
-	MLX5E_TC_FLOW_FLAG_HAIRPIN_RSS	= MLX5E_TC_FLOW_BASE + 2,
-	MLX5E_TC_FLOW_FLAG_SLOW		= MLX5E_TC_FLOW_BASE + 3,
-	MLX5E_TC_FLOW_FLAG_DUP		= MLX5E_TC_FLOW_BASE + 4,
-	MLX5E_TC_FLOW_FLAG_NOT_READY	= MLX5E_TC_FLOW_BASE + 5,
-	MLX5E_TC_FLOW_FLAG_DELETED	= MLX5E_TC_FLOW_BASE + 6,
-	MLX5E_TC_FLOW_FLAG_SIMPLE       = MLX5E_TC_FLOW_BASE + 7,
-	MLX5E_TC_FLOW_FLAG_CT           = MLX5E_TC_FLOW_BASE + 8,
-	MLX5E_TC_FLOW_FLAG_CT_ORIG      = MLX5E_TC_FLOW_BASE + 9,
-};
+int mlx5e_tc_esw_init(struct rhashtable *tc_ht);
+void mlx5e_tc_esw_cleanup(struct rhashtable *tc_ht);
 
-#ifdef HAVE_TC_FLOWER_OFFLOAD
-#define MLX5E_TC_MAX_SPLITS 1
-
-struct mlx5_nic_flow_attr {
-	u32 action;
-	u32 flow_tag;
-#ifdef HAVE_TCF_PEDIT_TCFP_KEYS_EX
-	struct mlx5_modify_hdr *modify_hdr;
-#endif
-	u32 hairpin_tirn;
-	u8 match_level;
-	struct mlx5_flow_table	*hairpin_ft;
-	struct mlx5_fc		*counter;
-};
-
-/* Helper struct for accessing a struct containing list_head array.
- * Containing struct
- *   |- Helper array
- *      [0] Helper item 0
- *          |- list_head item 0
- *          |- index (0)
- *      [1] Helper item 1
- *          |- list_head item 1
- *          |- index (1)
- * To access the containing struct from one of the list_head items:
- * 1. Get the helper item from the list_head item using
- *    helper item =
- *        container_of(list_head item, helper struct type, list_head field)
- * 2. Get the contining struct from the helper item and its index in the array:
- *    containing struct =
- *        container_of(helper item, containing struct type, helper field[index])
- */
-struct encap_flow_item {
-	struct mlx5e_encap_entry *e; /* attached encap instance */
-	struct list_head list;
-	int index;
-};
-
-struct mlx5e_tc_flow {
-	struct rhash_head	node;
-	struct mlx5e_priv	*priv;
-	u64			cookie;
-	unsigned long		flags;
-	struct mlx5_flow_handle *rule[MLX5E_TC_MAX_SPLITS + 1];
-	/* Flow can be associated with multiple encap IDs.
-	 * The number of encaps is bounded by the number of supported
-	 * destinations.
-	 */
-	struct encap_flow_item encaps[MLX5_MAX_FLOW_FWD_VPORTS];
-	struct mlx5e_tc_flow    *peer_flow;
-	struct mlx5e_mod_hdr_entry *mh; /* attached mod header instance */
-#ifdef HAVE_TCF_PEDIT_TCFP_KEYS_EX
-	struct list_head	mod_hdr; /* flows sharing the same mod hdr ID */
-#endif
-	struct mlx5e_hairpin_entry *hpe; /* attached hairpin instance */
-	struct list_head	hairpin; /* flows sharing the same hairpin */
-	struct list_head	peer;    /* flows with peer flow */
-	struct list_head	unready; /* flows not ready to be offloaded (e.g due to missing route) */
-	int			tmp_efi_index;
-	struct list_head	tmp_list; /* temporary flow list used by neigh update */
-	struct net_device      *added_dev;
-	refcount_t		refcnt;
-	struct rcu_head		rcu_head;
-	struct completion	init_done;
-
-	u64			version;
-	struct mlx5e_miniflow   *miniflow;
-	struct mlx5_fc          *dummy_counter;
-	struct list_head        miniflow_list;
-	struct rcu_head		rcu;
-	struct list_head        nft_node;
-	spinlock_t		*dep_lock;
-
-	union {
-		struct mlx5_esw_flow_attr esw_attr[0];
-		struct mlx5_nic_flow_attr nic_attr[0];
-	};
-};
-
-struct mlx5e_tc_flow_parse_attr {
-#ifdef HAVE_TCF_TUNNEL_INFO
-       const struct ip_tunnel_info *tun_info[MLX5_MAX_FLOW_FWD_VPORTS];
-#endif
-       struct net_device *filter_dev;
-       struct mlx5_flow_spec spec;
-#ifdef HAVE_TCF_PEDIT_TCFP_KEYS_EX
-       int num_mod_hdr_actions;
-       int max_mod_hdr_actions;
-       void *mod_hdr_actions;
-#endif
-	int mirred_ifindex[MLX5_MAX_FLOW_FWD_VPORTS];
-};
-#endif /* HAVE_TC_FLOWER_OFFLOAD */
-
-#define MLX5_MH_ACT_SZ MLX5_UN_SZ_BYTES(set_add_copy_action_in_auto)
-
-struct pedit_headers {
-	struct ethhdr  eth;
-	struct vlan_hdr vlan;
-	struct iphdr   ip4;
-	struct ipv6hdr ip6;
-	struct tcphdr  tcp;
-	struct udphdr  udp;
-};
-
-struct pedit_headers_action {
-	struct pedit_headers	vals;
-	struct pedit_headers	masks;
-	u32			pedits;
-};
-
-int mlx5e_tc_nic_init(struct mlx5e_priv *priv);
-void mlx5e_tc_nic_cleanup(struct mlx5e_priv *priv);
-
-int mlx5e_tc_esw_init(struct mlx5e_priv *priv);
-void mlx5e_tc_esw_cleanup(struct mlx5e_priv *priv);
-
-#ifdef HAVE_TC_FLOWER_OFFLOAD
 int mlx5e_configure_flower(struct net_device *dev, struct mlx5e_priv *priv,
-			   struct tc_cls_flower_offload *f, unsigned long flags);
+			   struct flow_cls_offload *f, unsigned long flags);
 int mlx5e_delete_flower(struct net_device *dev, struct mlx5e_priv *priv,
-			struct tc_cls_flower_offload *f, unsigned long flags);
+			struct flow_cls_offload *f, unsigned long flags);
 
-#ifdef HAVE_TC_CLSFLOWER_STATS
 int mlx5e_stats_flower(struct net_device *dev, struct mlx5e_priv *priv,
-		       struct tc_cls_flower_offload *f, unsigned long flags);
-#endif
-
-#ifdef HAVE_TCF_TUNNEL_INFO
+		       struct flow_cls_offload *f, unsigned long flags);
 
 struct mlx5e_encap_entry;
 void mlx5e_tc_encap_flows_add(struct mlx5e_priv *priv,
@@ -219,51 +77,137 @@ void mlx5e_put_encap_flow_list(struct mlx5e_priv *priv, struct list_head *flow_l
 
 struct mlx5e_neigh_hash_entry;
 void mlx5e_tc_update_neigh_used_value(struct mlx5e_neigh_hash_entry *nhe);
-#endif
 
 int mlx5e_tc_num_filters(struct mlx5e_priv *priv, unsigned long flags);
 
 void mlx5e_tc_reoffload_flows_work(struct work_struct *work);
 
-void *mlx5e_lookup_tc_ht(struct mlx5e_priv *priv,
-			 unsigned long *cookie,
-			 int flags);
-void mlx5e_flow_put(struct mlx5e_priv *priv,
-		    struct mlx5e_tc_flow *flow);
-void mlx5e_flow_put_lock(struct mlx5e_priv *priv,
-		    struct mlx5e_tc_flow *flow, bool lock);
-int mlx5e_tc_add_fdb_flow(struct mlx5e_priv *priv,
-			  struct mlx5e_tc_flow *flow,
-			  struct netlink_ext_ack *extack);
+enum mlx5e_tc_attr_to_reg {
+	CHAIN_TO_REG,
+	TUNNEL_TO_REG,
+	CTSTATE_TO_REG,
+	ZONE_TO_REG,
+	ZONE_RESTORE_TO_REG,
+	MARK_TO_REG,
+	LABELS_TO_REG,
+	FTEID_TO_REG,
+};
 
-int mlx5e_alloc_flow(struct mlx5e_priv *priv, int attr_size,
-		     u64 cookie, unsigned long flow_flags, gfp_t flags,
-		     struct mlx5e_tc_flow_parse_attr **__parse_attr,
-		     struct mlx5e_tc_flow **__flow);
-int alloc_mod_hdr_actions(struct mlx5e_priv *priv,
-			  struct pedit_headers_action *hdrs,
-			  int namespace,
-			  struct mlx5e_tc_flow_parse_attr *parse_attr,
-			  gfp_t flags);
-int parse_tc_pedit_action(struct mlx5e_priv *priv,
-			  const struct flow_action_entry *act, int namespace,
-			  struct mlx5e_tc_flow_parse_attr *parse_attr,
-			  struct pedit_headers_action *hdrs,
-			  struct netlink_ext_ack *extack);
-int alloc_tc_pedit_action(struct mlx5e_priv *priv, int namespace,
-			  struct mlx5e_tc_flow_parse_attr *parse_attr,
-			  struct pedit_headers_action *hdrs,
-			  u32 *action_flags,
-			  struct netlink_ext_ack *extack);
+struct mlx5e_tc_attr_to_reg_mapping {
+	int mfield; /* rewrite field */
+	int moffset; /* offset of mfield */
+	int mlen; /* bytes to rewrite/match */
+
+	int soffset; /* offset of spec for match */
+};
+
+extern struct mlx5e_tc_attr_to_reg_mapping mlx5e_tc_attr_to_reg_mappings[];
+
 bool mlx5e_is_valid_eswitch_fwd_dev(struct mlx5e_priv *priv,
 				    struct net_device *out_dev);
 
-#if !defined(HAVE_SWITCHDEV_PORT_SAME_PARENT_ID)
-bool switchdev_port_same_parent_id(struct net_device *a,
-				   struct net_device *b);
-#endif
+struct mlx5e_tc_update_priv {
+	struct net_device *tun_dev;
+};
 
-#endif /* HAVE_TC_FLOWER_OFFLOAD */
+int mlx5e_tc_match_to_reg_set(struct mlx5_core_dev *mdev,
+			      struct mlx5e_tc_mod_hdr_acts *mod_hdr_acts,
+			      enum mlx5e_tc_attr_to_reg type,
+			      u32 data);
+
+void mlx5e_tc_match_to_reg_match(struct mlx5_flow_spec *spec,
+				 enum mlx5e_tc_attr_to_reg type,
+				 u32 data,
+				 u32 mask);
+
+void mlx5e_tc_match_to_reg_get_match(struct mlx5_flow_spec *spec,
+				     enum mlx5e_tc_attr_to_reg type,
+				     u32 *data,
+				     u32 *mask);
+
+int alloc_mod_hdr_actions(struct mlx5_core_dev *mdev,
+			  int namespace,
+			  struct mlx5e_tc_mod_hdr_acts *mod_hdr_acts);
+void dealloc_mod_hdr_actions(struct mlx5e_tc_mod_hdr_acts *mod_hdr_acts);
+
+struct mlx5e_tc_flow;
+u32 mlx5e_tc_get_flow_tun_id(struct mlx5e_tc_flow *flow);
+
+#if IS_ENABLED(CONFIG_MLX5_CLS_ACT)
+
+struct tunnel_match_key {
+	struct flow_dissector_key_control enc_control;
+	struct flow_dissector_key_keyid enc_key_id;
+	struct flow_dissector_key_ports enc_tp;
+	struct flow_dissector_key_ip enc_ip;
+	union {
+		struct flow_dissector_key_ipv4_addrs enc_ipv4;
+		struct flow_dissector_key_ipv6_addrs enc_ipv6;
+	};
+
+	int filter_ifindex;
+};
+
+struct tunnel_match_enc_opts {
+	struct flow_dissector_key_enc_opts key;
+	struct flow_dissector_key_enc_opts mask;
+};
+
+/* Tunnel_id mapping is TUNNEL_INFO_BITS + ENC_OPTS_BITS.
+ * Upper TUNNEL_INFO_BITS for general tunnel info.
+ * Lower ENC_OPTS_BITS bits for enc_opts.
+ */
+#define TUNNEL_INFO_BITS 12
+#define TUNNEL_INFO_BITS_MASK GENMASK(TUNNEL_INFO_BITS - 1, 0)
+#define ENC_OPTS_BITS 12
+#define ENC_OPTS_BITS_MASK GENMASK(ENC_OPTS_BITS - 1, 0)
+#define TUNNEL_ID_BITS (TUNNEL_INFO_BITS + ENC_OPTS_BITS)
+#define TUNNEL_ID_MASK GENMASK(TUNNEL_ID_BITS - 1, 0)
+
+int mlx5e_tc_nic_init(struct mlx5e_priv *priv);
+void mlx5e_tc_nic_cleanup(struct mlx5e_priv *priv);
+
+int mlx5e_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
+			    void *cb_priv);
+
+#if defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE) || defined(HAVE_NDO_SETUP_TC_RH_EXTENDED)
+#if !defined(HAVE_FLOW_BLOCK_CB_SETUP_SIMPLE) && defined(HAVE_TC_BLOCK_OFFLOAD)
+int mlx5e_setup_tc_block(struct net_device *dev, struct tc_block_offload *f);
+#endif
+#if !defined(HAVE_TC_BLOCK_OFFLOAD) && !defined(HAVE_FLOW_BLOCK_OFFLOAD)
+int mlx5e_setup_tc_cls_flower(struct net_device *dev,
+			      struct flow_cls_offload *cls_flower,
+			      unsigned long flags);
+#endif /* !HAVE_TC_BLOCK_OFFLOAD && !HAVE_FLOW_BLOCK_OFFLOAD */
+#endif /* HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE || HAVE_NDO_SETUP_TC_RH_EXTENDED */
+
+#else /* CONFIG_MLX5_CLS_ACT */
+static inline int  mlx5e_tc_nic_init(struct mlx5e_priv *priv) { return 0; }
+static inline void mlx5e_tc_nic_cleanup(struct mlx5e_priv *priv) {}
+static inline int
+mlx5e_setup_tc_block_cb(enum tc_setup_type type, void *type_data, void *cb_priv)
+{ return -EOPNOTSUPP; }
+
+#if defined(HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE) || defined(HAVE_NDO_SETUP_TC_RH_EXTENDED)
+#if !defined(HAVE_FLOW_BLOCK_CB_SETUP_SIMPLE) && defined(HAVE_TC_BLOCK_OFFLOAD)
+static inline int mlx5e_setup_tc_block(struct net_device *dev,
+				       struct tc_block_offload *f)
+{
+	return -EOPNOTSUPP;
+}
+#endif
+#if !defined(HAVE_TC_BLOCK_OFFLOAD) && !defined(HAVE_FLOW_BLOCK_OFFLOAD)
+static inline int mlx5e_setup_tc_cls_flower(struct net_device *dev,
+					    struct flow_cls_offload *cls_flower,
+					    unsigned long flags)
+{
+	return -EOPNOTSUPP;
+}
+#endif /* !HAVE_TC_BLOCK_OFFLOAD && !HAVE_FLOW_BLOCK_OFFLOAD */
+#endif /* HAVE_NDO_SETUP_TC_TAKES_TC_SETUP_TYPE || HAVE_NDO_SETUP_TC_RH_EXTENDED */
+
+#endif /* CONFIG_MLX5_CLS_ACT */
+
 #else /* CONFIG_MLX5_ESWITCH */
 static inline int  mlx5e_tc_nic_init(struct mlx5e_priv *priv) { return 0; }
 static inline void mlx5e_tc_nic_cleanup(struct mlx5e_priv *priv) {}
@@ -272,6 +216,10 @@ static inline int  mlx5e_tc_num_filters(struct mlx5e_priv *priv,
 {
 	return 0;
 }
+
+static inline int
+mlx5e_setup_tc_block_cb(enum tc_setup_type type, void *type_data, void *cb_priv)
+{ return -EOPNOTSUPP; }
 #endif
 
 #endif /* __MLX5_EN_TC_H__ */

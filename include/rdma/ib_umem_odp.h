@@ -33,25 +33,21 @@
 #ifndef IB_UMEM_ODP_H
 #define IB_UMEM_ODP_H
 
+#ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 #include <rdma/ib_umem.h>
 #include <rdma/ib_verbs.h>
-#ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
-#ifdef HAVE_INTERVAL_TREE_GENERIC_H
+#ifndef HAVE_MMU_INTERVAL_NOTIFIER
 #include <linux/interval_tree.h>
-#endif
-#endif
-#include <rdma/ib_umem_odp_exp.h>
-
-#ifdef HAVE_INTERVAL_TREE_GENERIC_H
-struct umem_odp_node {
-	u64 __subtree_last;
-	struct rb_node rb;
-};
 #endif
 
 struct ib_umem_odp {
 	struct ib_umem umem;
+#ifdef HAVE_MMU_INTERVAL_NOTIFIER
+	struct mmu_interval_notifier notifier;
+	struct pid *tgid;
+#else
 	struct ib_ucontext_per_mm *per_mm;
+#endif
 
 	/*
 	 * An array of the pages included in the on-demand paging umem.
@@ -74,23 +70,58 @@ struct ib_umem_odp {
 	struct mutex		umem_mutex;
 	void			*private; /* for the HW driver to use. */
 
+#ifndef HAVE_MMU_INTERVAL_NOTIFIER
 	int notifiers_seq;
 	int notifiers_count;
+#endif
 	int npages;
 
-#ifdef HAVE_INTERVAL_TREE_GENERIC_H
-       /* Tree tracking */
-       struct umem_odp_node	interval_tree;
+#ifndef HAVE_MMU_INTERVAL_NOTIFIER
+	struct interval_tree_node interval_tree;
 #endif
+	/*
+	 * An implicit odp umem cannot be DMA mapped, has 0 length, and serves
+	 * only as an anchor for the driver to hold onto the per_mm. FIXME:
+	 * This should be removed and drivers should work with the per_mm
+	 * directly.
+	 */
+	bool is_implicit_odp;
+
+#ifndef HAVE_MMU_INTERVAL_NOTIFIER
 	struct completion	notifier_completion;
-	int			dying;
-	struct work_struct	work;
-	int			invalidating;
+#endif
+	unsigned int		page_shift;
 };
 
 static inline struct ib_umem_odp *to_ib_umem_odp(struct ib_umem *umem)
 {
 	return container_of(umem, struct ib_umem_odp, umem);
+}
+
+/* Returns the first page of an ODP umem. */
+static inline unsigned long ib_umem_start(struct ib_umem_odp *umem_odp)
+{
+#ifdef HAVE_MMU_INTERVAL_NOTIFIER
+	return umem_odp->notifier.interval_tree.start;
+#else
+	return umem_odp->interval_tree.start;
+#endif
+}
+
+/* Returns the address of the page after the last one of an ODP umem. */
+static inline unsigned long ib_umem_end(struct ib_umem_odp *umem_odp)
+{
+#ifdef HAVE_MMU_INTERVAL_NOTIFIER
+	return umem_odp->notifier.interval_tree.last + 1;
+#else
+	return umem_odp->interval_tree.last + 1;
+#endif
+}
+
+static inline size_t ib_umem_odp_num_pages(struct ib_umem_odp *umem_odp)
+{
+	return (ib_umem_end(umem_odp) - ib_umem_start(umem_odp)) >>
+	       umem_odp->page_shift;
 }
 
 /*
@@ -108,49 +139,65 @@ static inline struct ib_umem_odp *to_ib_umem_odp(struct ib_umem *umem)
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 
+#ifdef HAVE_MMU_INTERVAL_NOTIFIER
+struct ib_umem_odp *
+ib_umem_odp_get(struct ib_device *device, unsigned long addr, size_t size,
+		int access, const struct mmu_interval_notifier_ops *ops);
+struct ib_umem_odp *ib_umem_odp_alloc_implicit(struct ib_device *device,
+#else
 struct ib_ucontext_per_mm {
+#ifdef HAVE_MMU_NOTIFIER_OPS_HAS_FREE_NOTIFIER
+	struct mmu_notifier mn;
+	struct pid *tgid;
+#else
 	struct ib_ucontext *context;
 	struct mm_struct *mm;
-	struct pid *tgid;
+ 	struct pid *tgid;
 	bool active;
+#endif
 
 #ifndef HAVE_INTERVAL_TREE_TAKES_RB_ROOT
 	struct rb_root_cached umem_tree;
 #else
-	struct rb_root          umem_tree;
+	struct rb_root umem_tree;
 #endif
 	/* Protects umem_tree */
 	struct rw_semaphore umem_rwsem;
-
+#ifndef HAVE_MMU_NOTIFIER_OPS_HAS_FREE_NOTIFIER
 	struct mmu_notifier mn;
 	unsigned int odp_mrs_count;
 
 	struct list_head ucontext_list;
 	struct rcu_head rcu;
+#endif
 };
 
-#ifdef HAVE_INTERVAL_TREE_GENERIC_H
-int ib_umem_odp_get(struct ib_umem_odp *umem_odp, int access);
-struct ib_umem_odp *ib_alloc_odp_umem(struct ib_umem_odp *root_umem,
-				      unsigned long addr, size_t size);
+struct ib_umem_odp *ib_umem_odp_get(struct ib_udata *udata, unsigned long addr,
+				    size_t size, int access);
+struct ib_umem_odp *ib_umem_odp_alloc_implicit(struct ib_udata *udata,
+#endif
+					       int access);
+#ifdef HAVE_MMU_INTERVAL_NOTIFIER
+struct ib_umem_odp *
+ib_umem_odp_alloc_child(struct ib_umem_odp *root_umem, unsigned long addr,
+			size_t size,
+			const struct mmu_interval_notifier_ops *ops);
+#else
+struct ib_umem_odp *ib_umem_odp_alloc_child(struct ib_umem_odp *root_umem,
+					    unsigned long addr, size_t size);
+#endif
 void ib_umem_odp_release(struct ib_umem_odp *umem_odp);
-#endif /* HAVE_INTERVAL_TREE_GENERIC_H */
 
 int ib_umem_odp_map_dma_pages(struct ib_umem_odp *umem_odp, u64 start_offset,
 			      u64 bcnt, u64 access_mask,
-			      unsigned long current_seq,
-			      enum ib_odp_dma_map_flags flags,
-			      int *num_pages);
+			      unsigned long current_seq);
 
 void ib_umem_odp_unmap_dma_pages(struct ib_umem_odp *umem_odp, u64 start_offset,
-				 u64 bound, int *num_pages);
+				 u64 bound);
 
+#ifndef HAVE_MMU_INTERVAL_NOTIFIER
 typedef int (*umem_call_back)(struct ib_umem_odp *item, u64 start, u64 end,
 			      void *cookie);
-/*
- * Call the callback on each ib_umem in the range. Returns the logical or of
- * the return values of the functions called.
- */
 #ifndef HAVE_INTERVAL_TREE_TAKES_RB_ROOT
 int rbt_ib_umem_for_each_in_range(struct rb_root_cached *root,
 #else
@@ -163,50 +210,34 @@ int rbt_ib_umem_for_each_in_range(struct rb_root *root,
 #endif
 				  void *cookie);
 
-/*
- * Find first region intersecting with address range.
- * Return NULL if not found
- */
-#ifndef HAVE_INTERVAL_TREE_TAKES_RB_ROOT
-struct ib_umem_odp *rbt_ib_umem_lookup(struct rb_root_cached *root,
-#else
-struct ib_umem_odp *rbt_ib_umem_lookup(struct rb_root *root,
-#endif
-				       u64 addr, u64 length);
-
 static inline int ib_umem_mmu_notifier_retry(struct ib_umem_odp *umem_odp,
 					     unsigned long mmu_seq)
 {
-	/*
-	 * This code is strongly based on the KVM code from
-	 * mmu_notifier_retry. Should be called with
-	 * the relevant locks taken (umem_odp->umem_mutex
-	 * and the ucontext umem_mutex semaphore locked for read).
-	 */
-
-	struct ib_umem *umem = &umem_odp->umem;
-	if (unlikely(umem_odp->notifiers_count)) {
-		ib_umem_odp_account_invalidations_fault_contentions(umem->context->device);
+	if (unlikely(umem_odp->notifiers_count))
 		return 1;
-	}
-
-	if (umem_odp->notifiers_seq != mmu_seq) {
-		ib_umem_odp_account_invalidations_fault_contentions(umem->context->device);
+	if (umem_odp->notifiers_seq != mmu_seq)
 		return 1;
-	}
-
 	return 0;
 }
-
+#endif
 #else /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 
-static inline int ib_umem_odp_get(struct ib_umem_odp *umem_odp, int access)
+#ifdef HAVE_MMU_INTERVAL_NOTIFIER
+static inline struct ib_umem_odp *
+ib_umem_odp_get(struct ib_device *device, unsigned long addr, size_t size,
+		int access, const struct mmu_interval_notifier_ops *ops)
+#else
+static inline struct ib_umem_odp *ib_umem_odp_get(struct ib_udata *udata,
+						  unsigned long addr,
+						  size_t size, int access)
+#endif
 {
-	return -EINVAL;
+	return ERR_PTR(-EINVAL);
 }
 
 static inline void ib_umem_odp_release(struct ib_umem_odp *umem_odp) {}
 
+#endif /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 #endif /* CONFIG_INFINIBAND_ON_DEMAND_PAGING */
 
 #endif /* IB_UMEM_ODP_H */

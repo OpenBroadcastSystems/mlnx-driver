@@ -3,6 +3,8 @@
 # Makefile for Mellanox 5th generation network adapters
 # (ConnectX series) core & netdev driver
 #
+#
+#
 
 subdir-ccflags-y += -I$(src)
 
@@ -12,22 +14,24 @@ obj-$(CONFIG_MLX5_CORE) += mlx5_core.o
 # mlx5 core basic
 #
 mlx5_core-y :=	main.o cmd.o debugfs.o fw.o eq.o uar.o pagealloc.o \
-		health.o mcg.o cq.o alloc.o qp.o port.o mr.o pd.o \
+		health.o mcg.o cq.o alloc.o port.o mr.o pd.o \
 		transobj.o vport.o sriov.o fs_cmd.o fs_core.o pci_irq.o \
-		fs_counters.o rl.o lag.o dev.o events.o wq.o lib/gid.o lib/dm.o \
-		lib/devcom.o lib/pci_vsc.o diag/fs_tracepoint.o diag/fw_tracer.o \
-		diag/crdump.o diag/rsc_dump.o qp_exp.o \
-		fw_exp.o sriov_sysfs.o mst_dump.o en_diag.o params.o crdump.o \
-		icmd.o capi.o diag/diag_cnt.o eswitch_devlink_compat.o devlink.o
+		fs_counters.o rl.o lag.o dev.o events.o wq.o lib/gid.o \
+		lib/devcom.o lib/pci_vsc.o lib/dm.o diag/fs_tracepoint.o \
+		diag/fw_tracer.o diag/crdump.o devlink.o diag/rsc_dump.o \
+		sriov_sysfs.o mst_dump.o en_diag.o params.o crdump.o \
+		diag/diag_cnt.o eswitch_devlink_compat.o
 
-mlx5_core-$(CONFIG_ENABLE_MLX5_FS_DEBUGFS) += fs_debugfs.o
+mlx5_core-y += compat.o
+
 #
 # Netdev basic
 #
 mlx5_core-$(CONFIG_MLX5_CORE_EN) += en_main.o en_common.o en_fs.o en_ethtool.o \
-		en_tx.o en_rx.o en_dim.o en_txrx.o en/xdp.o en_stats.o en_sysfs.o en_ecn.o \
+		en_tx.o en_rx.o en_dim.o en_txrx.o en/xdp.o en_stats.o en_sysfs.o en_ecn.o\
 		en_selftest.o en/port.o en/monitor_stats.o en/health.o \
-		en/reporter_tx.o en/reporter_rx.o en/params.o en_debugfs.o en_sniffer.o
+		en/reporter_tx.o en/reporter_rx.o en/params.o en_debugfs.o \
+                en/xsk/umem.o en/xsk/setup.o en/xsk/rx.o en/xsk/tx.o en/devlink.o
 
 #
 # Netdev extra
@@ -35,23 +39,24 @@ mlx5_core-$(CONFIG_MLX5_CORE_EN) += en_main.o en_common.o en_fs.o en_ethtool.o \
 mlx5_core-$(CONFIG_MLX5_EN_ARFS)     += en_arfs.o
 mlx5_core-$(CONFIG_MLX5_EN_RXNFC)    += en_fs_ethtool.o
 mlx5_core-$(CONFIG_MLX5_CORE_EN_DCB) += en_dcbnl.o en/port_buffer.o
-mlx5_core-$(CONFIG_MLX5_ESWITCH)     += en_rep.o en_tc.o en/tc_tun.o lib/port_tun.o lag_mp.o \
-					miniflow.o miniflow_aging.o en_bond.o lib/geneve.o \
-					en/tc_tun_vxlan.o en/tc_tun_gre.o en/tc_tun_geneve.o
-
-mlx5_core-$(CONFIG_MLX5_EN_ACCEL_FS) += en_accel/fs.o
-
-mlx5_core-$(CONFIG_MLX5_SW_STEERING) += steering/dr_domain.o steering/dr_table.o \
-					steering/dr_matcher.o steering/dr_rule.o \
-					steering/dr_icm_pool.o \
-					steering/dr_ste.o steering/dr_send.o \
-					steering/dr_cmd.o steering/dr_fw.o \
-					steering/dr_action.o steering/fs_dr.o
+mlx5_core-$(CONFIG_PCI_HYPERV_INTERFACE) += en/hv_vhca_stats.o
+mlx5_core-$(CONFIG_MLX5_ESWITCH)     += en_rep.o lib/geneve.o lib/port_tun.o lag_mp.o \
+					en/mod_hdr.o en/rep/bond.o
+mlx5_core-$(CONFIG_MLX5_CLS_ACT)     += en_tc.o en/rep/tc.o en/rep/neigh.o \
+					en/mapping.o esw/chains.o en/tc_tun.o \
+					en/tc_tun_vxlan.o en/tc_tun_gre.o en/tc_tun_geneve.o \
+					diag/en_tc_tracepoint.o
+mlx5_core-$(CONFIG_MLX5_TC_CT)	     += en/tc_ct.o
 
 #
 # Core extra
 #
-mlx5_core-$(CONFIG_MLX5_ESWITCH)   += eswitch.o eswitch_offloads.o ecpf.o rdma.o
+mlx5_core-$(CONFIG_MLX5_ESWITCH)   += eswitch.o eswitch_offloads.o eswitch_offloads_termtbl.o \
+				      ecpf.o rdma.o
+mlx5_core-$(CONFIG_MLX5_ESWITCH)   += esw/acl/helper.o \
+				      esw/acl/egress_lgcy.o esw/acl/egress_ofld.o \
+				      esw/acl/ingress_lgcy.o esw/acl/ingress_ofld.o
+
 mlx5_core-$(CONFIG_MLX5_MPFS)      += lib/mpfs.o
 ifneq ($(CONFIG_VXLAN),)
 	mlx5_core-y		+= lib/vxlan.o
@@ -59,6 +64,7 @@ endif
 ifneq ($(CONFIG_PTP_1588_CLOCK),)
 	mlx5_core-y		+= lib/clock.o
 endif
+mlx5_core-$(CONFIG_PCI_HYPERV_INTERFACE) += lib/hv.o lib/hv_vhca.o
 
 #
 # Ipoib netdev
@@ -68,20 +74,30 @@ mlx5_core-$(CONFIG_MLX5_CORE_IPOIB) += ipoib/ipoib.o ipoib/ethtool.o ipoib/ipoib
 #
 # Accelerations & FPGA
 #
+mlx5_core-$(CONFIG_MLX5_IPSEC) += accel/ipsec_offload.o
 mlx5_core-$(CONFIG_MLX5_FPGA_IPSEC) += fpga/ipsec.o
 mlx5_core-$(CONFIG_MLX5_FPGA_TLS)   += fpga/tls.o
 mlx5_core-$(CONFIG_MLX5_ACCEL)      += lib/crypto.o accel/tls.o accel/ipsec.o
 
 mlx5_core-$(CONFIG_MLX5_FPGA) += fpga/cmd.o fpga/core.o fpga/conn.o fpga/sdk.o \
-				 fpga/trans.o fpga/xfer.o
-
-mlx5_core-$(CONFIG_MLX5_IPSEC) += en_accel/ipsec_steering.o en_accel/ipsec_offload.o
+			 fpga/tls.o fpga/trans.o fpga/xfer.o
 
 mlx5_core-$(CONFIG_MLX5_EN_IPSEC) += en_accel/ipsec.o en_accel/ipsec_rxtx.o \
-				     en_accel/ipsec_stats.o
+				     en_accel/ipsec_stats.o en_accel/ipsec_fs.o esw/ipsec.o
 
 mlx5_core-$(CONFIG_MLX5_EN_TLS) += en_accel/tls.o en_accel/tls_rxtx.o en_accel/tls_stats.o \
-				   en_accel/ktls.o en_accel/ktls_tx.o
+				   en_accel/fs_tcp.o en_accel/ktls.o en_accel/ktls_txrx.o \
+				   en_accel/ktls_tx.o en_accel/ktls_rx.o
+
+mlx5_core-$(CONFIG_MLX5_SW_STEERING) += steering/dr_domain.o steering/dr_table.o \
+					steering/dr_matcher.o steering/dr_rule.o \
+					steering/dr_icm_pool.o \
+					steering/dr_ste.o \
+					steering/dr_ste_v0.o steering/dr_ste_v1.o \
+					steering/dr_send.o \
+					steering/dr_cmd.o steering/dr_fw.o \
+					steering/dr_action.o steering/fs_dr.o steering/dr_dbg.o
+
 #
 # Mdev basic
 #
