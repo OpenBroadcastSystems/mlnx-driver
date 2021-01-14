@@ -4,9 +4,11 @@
 #include <devlink.h>
 
 #include "mlx5_core.h"
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+#include "fw_reset.h"
+#endif
 #include "fs_core.h"
 #include "eswitch.h"
-#include "meddev/sf.h"
 
 #ifdef HAVE_DEVLINK_DRIVERINIT_VAL
 static unsigned int esw_offloads_num_big_groups = ESW_OFFLOADS_DEFAULT_NUM_GROUPS;
@@ -14,24 +16,38 @@ static unsigned int esw_offloads_num_big_groups = ESW_OFFLOADS_DEFAULT_NUM_GROUP
 unsigned int esw_offloads_num_big_groups = ESW_OFFLOADS_DEFAULT_NUM_GROUPS;
 #endif
 module_param_named(num_of_groups, esw_offloads_num_big_groups,
-		   uint, 0644);
+                   uint, 0644);
 MODULE_PARM_DESC(num_of_groups,
-		 "Eswitch offloads number of big groups in FDB table. Valid range 1 - 1024. Default 4");
+                 "Eswitch offloads number of big groups in FDB table. Valid range 1 - 1024. Default 15");
 
 #ifdef HAVE_DEVLINK_HAS_FLASH_UPDATE
 static int mlx5_devlink_flash_update(struct devlink *devlink,
+#ifdef HAVE_FLASH_UPDATE_GET_3_PARAMS
+				     struct devlink_flash_update_params *params,
+#else
 				     const char *file_name,
 				     const char *component,
+#endif
 				     struct netlink_ext_ack *extack)
 {
 	struct mlx5_core_dev *dev = devlink_priv(devlink);
 	const struct firmware *fw;
 	int err;
 
+#ifdef HAVE_FLASH_UPDATE_GET_3_PARAMS
+	if (params->component)
+#else
 	if (component)
+#endif
 		return -EOPNOTSUPP;
 
-	err = request_firmware_direct(&fw, file_name, &dev->pdev->dev);
+	err = request_firmware_direct(&fw,
+#ifdef HAVE_FLASH_UPDATE_GET_3_PARAMS
+			params->file_name,
+#else
+			file_name,
+#endif
+			&dev->pdev->dev);
 	if (err)
 		return err;
 
@@ -42,12 +58,65 @@ static int mlx5_devlink_flash_update(struct devlink *devlink,
 }
 #endif
 
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+static int mlx5_devlink_reload_fw_activate(struct devlink *devlink, struct netlink_ext_ack *extack)
+{
+	struct mlx5_core_dev *dev = devlink_priv(devlink);
+	u8 reset_level, reset_type, net_port_alive;
+	int err;
+
+	err = mlx5_fw_reset_query(dev, &reset_level, &reset_type);
+	if (err)
+		return err;
+	if (!(reset_level & MLX5_MFRL_REG_RESET_LEVEL3)) {
+		NL_SET_ERR_MSG_MOD(extack, "FW activate requires reboot");
+		return -EINVAL;
+	}
+
+	net_port_alive = !!(reset_type & MLX5_MFRL_REG_RESET_TYPE_NET_PORT_ALIVE);
+	err = mlx5_fw_reset_set_reset_sync(dev, net_port_alive);
+	if (err)
+		goto out;
+
+	err = mlx5_fw_reset_wait_reset_done(dev);
+out:
+	if (err)
+		NL_SET_ERR_MSG_MOD(extack, "FW activate command failed");
+	return err;
+}
+#endif
+
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+static int mlx5_devlink_trigger_fw_live_patch(struct devlink *devlink,
+		struct netlink_ext_ack *extack)
+{
+	struct mlx5_core_dev *dev = devlink_priv(devlink);
+	u8 reset_level;
+	int err;
+
+	err = mlx5_fw_reset_query(dev, &reset_level, NULL);
+	if (err)
+		return err;
+	if (!(reset_level & MLX5_MFRL_REG_RESET_LEVEL0)) {
+		NL_SET_ERR_MSG_MOD(extack,
+				"FW upgrade to the stored FW can't be done by FW live patching");
+		return -EINVAL;
+	}
+
+	return mlx5_fw_reset_set_live_patch(dev);
+}
+#endif
+
 #ifdef HAVE_DEVLINK_HAS_RELOAD_UP_DOWN
-static int mlx5_devlink_reload_down(struct devlink *devlink, 
-#ifdef HAVE_DEVLINK_RELOAD_DOWN_HAS_3_PARAMS
+static int mlx5_devlink_reload_down(struct devlink *devlink,
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+			     bool netns_change,
+			     enum devlink_reload_action action,
+			     enum devlink_reload_limit limit,
+#elif defined(HAVE_DEVLINK_RELOAD_DOWN_HAS_3_PARAMS)
 			     bool netns_change,
 #endif
-				    struct netlink_ext_ack *extack)
+			     struct netlink_ext_ack *extack)
 {
 	struct mlx5_core_dev *dev = devlink_priv(devlink);
 #ifdef CONFIG_MLX5_ESWITCH
@@ -60,17 +129,58 @@ static int mlx5_devlink_reload_down(struct devlink *devlink,
 		}
 	}
 #endif
-
-	return mlx5_unload_one(dev, false);
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+	switch (action) {
+		case DEVLINK_RELOAD_ACTION_DRIVER_REINIT:
+			mlx5_unload_one(dev, false);
+			return 0;
+		case DEVLINK_RELOAD_ACTION_FW_ACTIVATE:
+			if (limit == DEVLINK_RELOAD_LIMIT_NO_RESET)
+				return mlx5_devlink_trigger_fw_live_patch(devlink, extack);
+			return mlx5_devlink_reload_fw_activate(devlink, extack);
+		default:
+			/* Unsupported action should not get to this function */
+			WARN_ON(1);
+			return -EOPNOTSUPP;
+	}
+#else
+	mlx5_unload_one(dev, false);
+	return 0;
+#endif /* HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION */
 }
 
 static int mlx5_devlink_reload_up(struct devlink *devlink,
-				  struct netlink_ext_ack *extack)
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+		enum devlink_reload_action action,
+		enum devlink_reload_limit limit,
+		u32 *actions_performed,
+#endif
+		struct netlink_ext_ack *extack)
 {
 	struct mlx5_core_dev *dev = devlink_priv(devlink);
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+	*actions_performed = BIT(action);
+	switch (action) {
+		case DEVLINK_RELOAD_ACTION_DRIVER_REINIT:
+			return mlx5_load_one(dev, false);
+		case DEVLINK_RELOAD_ACTION_FW_ACTIVATE:
+			if (limit == DEVLINK_RELOAD_LIMIT_NO_RESET)
+				break;
+			/* On fw_activate action, also driver is reloaded and reinit performed */
+			*actions_performed |= BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT);
+			return mlx5_load_one(dev, false);
+		default:
+			/* Unsupported action should not get to this function */
+			WARN_ON(1);
+			return -EOPNOTSUPP;
+	}
 
+	return 0;
+#else
 	return mlx5_load_one(dev, false);
+#endif /* HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION */
 }
+
 #endif /* HAVE_DEVLINK_HAS_RELOAD_UP_DOWN */
 
 #if defined(HAVE_DEVLINK_HAS_INFO_GET) && defined(HAVE_DEVLINK_INFO_VERSION_FIXED_PUT)
@@ -148,13 +258,18 @@ static const struct devlink_ops mlx5_devlink_ops = {
 	.eswitch_encap_mode_get = mlx5_devlink_eswitch_encap_mode_get,
 #endif /* HAVE_DEVLINK_HAS_ESWITCH_ENCAP_MODE_SET */
 #endif
-#ifdef HAVE_DEVLINK_HAS_ESWITCH_IPSEC_MODE_SET
-	.eswitch_ipsec_mode_set = mlx5_devlink_eswitch_ipsec_mode_set,
-	.eswitch_ipsec_mode_get = mlx5_devlink_eswitch_ipsec_mode_get,
+#ifdef HAVE_DEVLINK_HAS_PORT_FUNCTION_HW_ADDR_GET
+	.port_function_hw_addr_get = mlx5_devlink_port_function_hw_addr_get,
+	.port_function_hw_addr_set = mlx5_devlink_port_function_hw_addr_set,
 #endif
 #ifdef HAVE_DEVLINK_HAS_FLASH_UPDATE
 	.flash_update = mlx5_devlink_flash_update,
 #endif /* HAVE_DEVLINK_HAS_FLASH_UPDATE */
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+	.reload_actions = BIT(DEVLINK_RELOAD_ACTION_DRIVER_REINIT) |
+		       	  BIT(DEVLINK_RELOAD_ACTION_FW_ACTIVATE),
+	.reload_limits = BIT(DEVLINK_RELOAD_LIMIT_NO_RESET),
+#endif
 #ifdef HAVE_DEVLINK_HAS_RELOAD_UP_DOWN
 	.reload_down = mlx5_devlink_reload_down,
 	.reload_up = mlx5_devlink_reload_up,
@@ -272,6 +387,42 @@ static int mlx5_devlink_large_group_num_validate(struct devlink *devlink, u32 id
 
 	return 0;
 }
+
+#if IS_ENABLED(CONFIG_NET_CLS_E2E_CACHE)
+static int mlx5_devlink_e2e_cache_size_validate(struct devlink *devlink, u32 id,
+						union devlink_param_value val,
+						struct netlink_ext_ack *extack)
+{
+	int size = val.vu32;
+
+	if (size < 0) {
+		NL_SET_ERR_MSG_MOD(extack, "Unsupported e2e cache size");
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+#endif
+#endif /* CONFIG_MLX5_ESWITCH */
+
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+static int mlx5_devlink_enable_remote_dev_reset_set(struct devlink *devlink, u32 id,
+		struct devlink_param_gset_ctx *ctx)
+{
+	struct mlx5_core_dev *dev = devlink_priv(devlink);
+
+	mlx5_fw_reset_enable_remote_dev_reset_set(dev, ctx->val.vbool);
+	return 0;
+}
+
+static int mlx5_devlink_enable_remote_dev_reset_get(struct devlink *devlink, u32 id,
+		struct devlink_param_gset_ctx *ctx)
+{
+	struct mlx5_core_dev *dev = devlink_priv(devlink);
+
+	ctx->val.vbool = mlx5_fw_reset_enable_remote_dev_reset_get(dev);
+	return 0;
+}
 #endif
 
 static const struct devlink_param mlx5_devlink_params[] = {
@@ -284,13 +435,25 @@ static const struct devlink_param mlx5_devlink_params[] = {
 	DEVLINK_PARAM_GENERIC(ENABLE_ROCE, BIT(DEVLINK_PARAM_CMODE_DRIVERINIT),
 			      NULL, NULL, mlx5_devlink_enable_roce_validate),
 #endif
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+	DEVLINK_PARAM_GENERIC(ENABLE_REMOTE_DEV_RESET, BIT(DEVLINK_PARAM_CMODE_RUNTIME),
+			mlx5_devlink_enable_remote_dev_reset_get,
+			mlx5_devlink_enable_remote_dev_reset_set, NULL),
+#endif
 #ifdef CONFIG_MLX5_ESWITCH
 	DEVLINK_PARAM_DRIVER(MLX5_DEVLINK_PARAM_ID_ESW_LARGE_GROUP_NUM,
 			     "fdb_large_groups", DEVLINK_PARAM_TYPE_U32,
 			     BIT(DEVLINK_PARAM_CMODE_DRIVERINIT),
 			     NULL, NULL,
 			     mlx5_devlink_large_group_num_validate),
+#if IS_ENABLED(CONFIG_NET_CLS_E2E_CACHE)
+	DEVLINK_PARAM_DRIVER(MLX5_DEVLINK_PARAM_ID_ESW_E2E_CACHE_SIZE,
+			     "e2e_cache_size", DEVLINK_PARAM_TYPE_U32,
+			     BIT(DEVLINK_PARAM_CMODE_DRIVERINIT),
+			     NULL, NULL,
+			     mlx5_devlink_e2e_cache_size_validate),
 #endif
+#endif /* CONFIG_MLX5_ESWITCH */
 };
 
 static void mlx5_devlink_set_params_init_values(struct devlink *devlink)
@@ -318,6 +481,11 @@ static void mlx5_devlink_set_params_init_values(struct devlink *devlink)
 	devlink_param_driverinit_value_set(devlink,
 					   MLX5_DEVLINK_PARAM_ID_ESW_LARGE_GROUP_NUM,
 					   value);
+
+	value.vu32 = ESW_DEFAULT_E2E_CACHE_SIZE;
+	devlink_param_driverinit_value_set(devlink,
+					   MLX5_DEVLINK_PARAM_ID_ESW_E2E_CACHE_SIZE,
+					   value);
 #endif
 }
 #endif /* HAVE_DEVLINK_HAS_INFO_GET && HAVE_DEVLINK_INFO_VERSION_FIXED_PUT */
@@ -339,9 +507,6 @@ int mlx5_devlink_register(struct devlink *devlink, struct device *dev)
 #ifdef HAVE_DEVLINK_PARAMS_PUBLISHED
 	devlink_params_publish(devlink);
 #endif /* HAVE_DEVLINK_PARAMS_PUBLISHED */
-#ifdef HAVE_DEVLINK_RELOAD_ENABLE
-	devlink_reload_enable(devlink);
-#endif
 	return 0;
 
 params_reg_err:
@@ -352,13 +517,9 @@ params_reg_err:
 
 void mlx5_devlink_unregister(struct devlink *devlink)
 {
-#ifdef HAVE_DEVLINK_RELOAD_DISABLE
-	devlink_reload_disable(devlink);
-#endif
 #if defined(HAVE_DEVLINK_PARAM) && defined(HAVE_DEVLINK_PARAMS_PUBLISHED)
 	devlink_params_unregister(devlink, mlx5_devlink_params,
 				  ARRAY_SIZE(mlx5_devlink_params));
 #endif
 	devlink_unregister(devlink);
 }
-

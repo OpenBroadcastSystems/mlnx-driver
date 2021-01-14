@@ -106,7 +106,7 @@ static void mlx5_fc_pool_release_counter(struct mlx5_fc_pool *fc_pool, struct ml
 
 #if defined(HAVE_IDR_RT)
 #define USE_IDR 1
-#elif defined(HAVE_IDR_GET_NEXT_EXPORTED) && defined(HAVE_IDR_ALLOC)
+#else
 /* for now, we want to use this if it's original kernel function and
  * we don't define idr_* funcs ourselves, so it will be fast. */
 void *idr_get_next_ul(struct idr *idr, unsigned long *nextid)
@@ -540,7 +540,7 @@ struct mlx5_fc_bulk {
 	u32 base_id;
 	int bulk_len;
 	unsigned long *bitmask;
-	struct mlx5_fc fcs[0];
+	struct mlx5_fc fcs[];
 };
 
 static void mlx5_fc_init(struct mlx5_fc *counter, struct mlx5_fc_bulk *bulk,

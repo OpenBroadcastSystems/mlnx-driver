@@ -15,18 +15,14 @@ struct mlx5e_accel_tx_tls_state {
 };
 
 #ifdef HAVE_KTLS_STRUCTS
-u16 mlx5e_ktls_get_stop_room(struct mlx5e_txqsq *sq);
-#if 0
-u8 mlx5e_ktls_dumps_num_wqebbs(struct mlx5e_txqsq *sq, unsigned int nfrags,
-			       unsigned int sync_len);
-#endif
+u16 mlx5e_ktls_get_stop_room(struct mlx5e_params *params);
 
 bool mlx5e_ktls_handle_tx_skb(struct tls_context *tls_ctx, struct mlx5e_txqsq *sq,
 			      struct sk_buff *skb, int datalen,
 			      struct mlx5e_accel_tx_tls_state *state);
 #else
 static inline
-u16 mlx5e_ktls_get_stop_room(struct mlx5e_txqsq *sq)
+u16 mlx5e_ktls_get_stop_room(struct mlx5e_params *params)
 {
 	return 0;
 }
@@ -70,21 +66,35 @@ void mlx5e_ktls_handle_get_psv_completion(struct mlx5e_icosq_wqe_info *wi,
 void mlx5e_ktls_tx_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
 					   struct mlx5e_tx_wqe_info *wi,
 					   u32 *dma_fifo_cc);
-#else
-static inline void
-mlx5e_ktls_tx_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
-				      struct mlx5e_tx_wqe_info *wi,
-				      u32 *dma_fifo_cc)
+static inline bool
+mlx5e_ktls_tx_try_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
+					  struct mlx5e_tx_wqe_info *wi,
+					  u32 *dma_fifo_cc)
 {
+	if (unlikely(wi->resync_dump_frag_page)) {
+		mlx5e_ktls_tx_handle_resync_dump_comp(sq, wi, dma_fifo_cc);
+		return true;
+	}
+	return false;
+}
+#else
+static inline bool
+mlx5e_ktls_tx_try_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
+					  struct mlx5e_tx_wqe_info *wi,
+					  u32 *dma_fifo_cc)
+{
+	return false;
 }
 #endif /* HAVE_KTLS_STRUCTS */
 
 #else
-static inline void
-mlx5e_ktls_tx_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
-				      struct mlx5e_tx_wqe_info *wi,
-				      u32 *dma_fifo_cc)
+
+static inline bool
+mlx5e_ktls_tx_try_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
+					  struct mlx5e_tx_wqe_info *wi,
+					  u32 *dma_fifo_cc)
 {
+	return false;
 }
 
 #endif /* CONFIG_MLX5_EN_TLS */

@@ -100,7 +100,7 @@ static void irq_set_name(char *name, int vecidx)
 
 static int request_irqs(struct mlx5_core_dev *dev, int nvec)
 {
-#if defined(HAVE_IRQ_SET_AFFINITY_HINT) && !defined(HAVE_PCI_IRQ_API)
+#ifndef HAVE_PCI_IRQ_API
 	struct mlx5_priv *priv  = &dev->priv;
 #endif
 	char name[MLX5_MAX_IRQ_NAME];
@@ -109,13 +109,11 @@ static int request_irqs(struct mlx5_core_dev *dev, int nvec)
 
 	for (i = 0; i < nvec; i++) {
 		struct mlx5_irq *irq = mlx5_irq_get(dev, i);
-#ifdef HAVE_IRQ_SET_AFFINITY_HINT
 #ifdef HAVE_PCI_IRQ_API
 		int irqn = pci_irq_vector(dev->pdev, i);
 #else
 		struct msix_entry *msix = priv->msix_arr;
 		int irqn                 = msix[i].vector;
-#endif
 #endif
 
 		irq_set_name(name, i);
@@ -132,20 +130,35 @@ static int request_irqs(struct mlx5_core_dev *dev, int nvec)
 	return 0;
 
 err_request_irq:
-	for (; i >= 0; i--) {
+	while (i--) {
 		struct mlx5_irq *irq = mlx5_irq_get(dev, i);
-#ifdef HAVE_IRQ_SET_AFFINITY_HINT
 #ifdef HAVE_PCI_IRQ_API
 		int irqn = pci_irq_vector(dev->pdev, i);
 #else
 		struct msix_entry *msix = priv->msix_arr;
 		int irqn                 = msix[i].vector;
 #endif
-#endif
 
 		free_irq(irqn, &irq->nh);
 	}
 	return  err;
+}
+
+void mlx5_irq_rename(struct mlx5_core_dev *dev, int vecidx,
+		     const char *name)
+{
+	char *dst_name = mlx5_irq_get(dev, vecidx)->name;
+
+	if (!name) {
+		char default_name[MLX5_MAX_IRQ_NAME];
+
+		irq_set_name(default_name, vecidx);
+		snprintf(dst_name, MLX5_MAX_IRQ_NAME,
+			 "%s@pci:%s", default_name, pci_name(dev->pdev));
+	} else {
+		snprintf(dst_name, MLX5_MAX_IRQ_NAME, "%s-%d", name,
+			 vecidx - MLX5_IRQ_VEC_COMP_BASE);
+	}
 }
 
 static void irq_clear_rmap(struct mlx5_core_dev *dev)
@@ -201,7 +214,7 @@ err_out:
 
 static int set_comp_irq_affinity_hint(struct mlx5_core_dev *mdev, int i)
 {
-#if defined(HAVE_IRQ_SET_AFFINITY_HINT) && !defined(HAVE_PCI_IRQ_API)
+#ifndef HAVE_PCI_IRQ_API
 	struct mlx5_priv *priv  = &mdev->priv;
 	struct msix_entry *msix;
 #endif
@@ -210,13 +223,11 @@ static int set_comp_irq_affinity_hint(struct mlx5_core_dev *mdev, int i)
 	int irqn;
 
 	irq = mlx5_irq_get(mdev, vecidx);
-#ifdef HAVE_IRQ_SET_AFFINITY_HINT
 #ifdef HAVE_PCI_IRQ_API
 		irqn = pci_irq_vector(mdev->pdev, vecidx);
 #else
 		msix = priv->msix_arr;
 		irqn                 = msix[vecidx].vector;
-#endif
 #endif
 	if (!zalloc_cpumask_var(&irq->mask, GFP_KERNEL)) {
 		mlx5_core_warn(mdev, "zalloc_cpumask_var failed");
@@ -235,7 +246,7 @@ static int set_comp_irq_affinity_hint(struct mlx5_core_dev *mdev, int i)
 
 static void clear_comp_irq_affinity_hint(struct mlx5_core_dev *mdev, int i)
 {
-#if defined(HAVE_IRQ_SET_AFFINITY_HINT) && !defined(HAVE_PCI_IRQ_API)
+#ifndef HAVE_PCI_IRQ_API
 	struct mlx5_priv *priv  = &mdev->priv;
 	struct msix_entry *msix;
 #endif
@@ -244,13 +255,11 @@ static void clear_comp_irq_affinity_hint(struct mlx5_core_dev *mdev, int i)
 	int irqn;
 
 	irq = mlx5_irq_get(mdev, vecidx);
-#ifdef HAVE_IRQ_SET_AFFINITY_HINT
 #ifdef HAVE_PCI_IRQ_API
 		irqn = pci_irq_vector(mdev->pdev, vecidx);
 #else
 		msix = priv->msix_arr;
 		irqn                 = msix[vecidx].vector;
-#endif
 #endif
 	irq_set_affinity_hint(irqn, NULL);
 	free_cpumask_var(irq->mask);

@@ -113,6 +113,11 @@ mlx5e_get_tls_rx_context(struct tls_context *tls_ctx)
 			    base);
 }
 
+static inline bool mlx5e_is_tls_on(struct mlx5e_priv *priv)
+{
+	return priv->tls;
+}
+
 void mlx5e_tls_build_netdev(struct mlx5e_priv *priv);
 int mlx5e_tls_init(struct mlx5e_priv *priv);
 void mlx5e_tls_cleanup(struct mlx5e_priv *priv);
@@ -126,11 +131,12 @@ int mlx5e_tls_get_stats(struct mlx5e_priv *priv, u64 *data);
 static inline void mlx5e_tls_build_netdev(struct mlx5e_priv *priv)
 {
 #ifdef HAVE_UAPI_LINUX_TLS_H
-	if (mlx5_accel_is_ktls_device(priv->mdev))
-		mlx5e_ktls_build_netdev(priv);
+       if (mlx5_accel_is_ktls_device(priv->mdev))
+       	mlx5e_ktls_build_netdev(priv);
 #endif
 }
 
+static inline bool mlx5e_is_tls_on(struct mlx5e_priv *priv) { return false; }
 static inline int mlx5e_tls_init(struct mlx5e_priv *priv) { return 0; }
 static inline void mlx5e_tls_cleanup(struct mlx5e_priv *priv) { }
 static inline int mlx5e_tls_get_count(struct mlx5e_priv *priv) { return 0; }

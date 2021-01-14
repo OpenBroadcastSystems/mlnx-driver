@@ -34,7 +34,7 @@
 #include <crypto/aead.h>
 #include <net/xfrm.h>
 #include <net/esp.h>
-
+#include "accel/ipsec_offload.h"
 #include "en_accel/ipsec_rxtx.h"
 #include "en_accel/ipsec.h"
 #include "accel/accel.h"
@@ -233,19 +233,11 @@ static void mlx5e_ipsec_set_metadata(struct sk_buff *skb,
 		   ntohs(mdata->content.tx.seq));
 }
 
-#ifdef CONFIG_MLX5_IPSEC
-static void mlx5e_ipsec_set_ft_metadata(struct mlx5e_tx_wqe *wqe)
-{
-	struct mlx5_wqe_eth_seg *eseg = &wqe->eth;
-
-	eseg->flow_table_metadata |= cpu_to_be32(MLX5_ETH_WQE_FT_META_IPSEC);
-}
-
 /* Copy from upstream net/ipv4/esp4.c */
 #ifndef HAVE_ESP_OUTPUT_FILL_TRAILER
-static
+	static
 void esp_output_fill_trailer(u8 *tail, int tfclen, int plen, __u8 proto)
-{
+{ 
 	/* Fill padding... */
 	if (tfclen) {
 		memset(tail, 0, tfclen);
@@ -261,73 +253,98 @@ void esp_output_fill_trailer(u8 *tail, int tfclen, int plen, __u8 proto)
 }
 #endif
 
-static int mlx5e_ipsec_set_trailer(struct sk_buff *skb,
-				   struct mlx5_accel_trailer *tr,
-				   struct xfrm_state *x,
-				   struct xfrm_offload *xo)
+void mlx5e_ipsec_handle_tx_wqe(struct mlx5e_tx_wqe *wqe,
+			       struct mlx5e_accel_tx_ipsec_state *ipsec_st,
+			       struct mlx5_wqe_inline_seg *inlseg)
 {
-	struct xfrm_encap_tmpl  *encap = x->encap;
+	inlseg->byte_count = cpu_to_be32(ipsec_st->tailen | MLX5_INLINE_SEG);
+	esp_output_fill_trailer((u8 *)inlseg->data, 0, ipsec_st->plen, ipsec_st->xo->proto);
+}
+
+static int mlx5e_ipsec_set_state(struct mlx5e_priv *priv,
+				 struct sk_buff *skb,
+				 struct xfrm_state *x,
+				 struct xfrm_offload *xo,
+				 struct mlx5e_accel_tx_ipsec_state *ipsec_st)
+{
 	unsigned int blksize, clen, alen, plen;
 	struct crypto_aead *aead;
 	unsigned int tailen;
-	__u8 proto;
 
-	aead = x->data;
-	alen = crypto_aead_authsize(aead);
-	blksize = ALIGN(crypto_aead_blocksize(aead), 4);
-	clen = ALIGN(skb->len + 2, blksize);
-	plen = max_t(u32, clen - skb->len, 4);
-	tailen = plen + alen;
-	proto = (x->props.family == AF_INET) ?
-		((struct iphdr *)skb_network_header(skb))->protocol :
-		((struct ipv6hdr *)skb_network_header(skb))->nexthdr;
-	tr->wqe_params = MLX5_ETH_WQE_INSERT_TRAILER;
-	if (!encap) {
-		tr->wqe_params |= (proto == IPPROTO_ESP) ?
-				  MLX5_ETH_WQE_TRAILER_HDR_OUTER_IP_ASSOC :
-				  MLX5_ETH_WQE_TRAILER_HDR_OUTER_L4_ASSOC;
-	} else if (encap->encap_type == UDP_ENCAP_ESPINUDP) {
-		tr->wqe_params |= (proto == IPPROTO_ESP) ?
-				  MLX5_ETH_WQE_TRAILER_HDR_INNER_IP_ASSOC :
-				  MLX5_ETH_WQE_TRAILER_HDR_INNER_L4_ASSOC;
-	} else {
-		goto err_tr;
+	ipsec_st->x = x;
+	ipsec_st->xo = xo;
+	if (mlx5_is_ipsec_device(priv->mdev)) {
+		aead = x->data;
+		alen = crypto_aead_authsize(aead);
+		blksize = ALIGN(crypto_aead_blocksize(aead), 4);
+		clen = ALIGN(skb->len + 2, blksize);
+		plen = max_t(u32, clen - skb->len, 4);
+		tailen = plen + alen;
+		ipsec_st->plen = plen;
+		ipsec_st->tailen = tailen;
 	}
 
-	if (WARN_ON(tailen > MLX5_MAX_IPSEC_TRAILER_SZ))
-		goto err_tr;
-
-	esp_output_fill_trailer(tr->trbuff, 0, plen, (u8)xo->proto);
-	tr->trbufflen = tailen;
-
 	return 0;
-
-err_tr:
-	return -EOPNOTSUPP;
 }
-#endif
 
-struct sk_buff *mlx5e_ipsec_handle_tx_skb(struct net_device *netdev,
-					  struct mlx5e_txqsq *sq,
-					  struct mlx5e_tx_wqe *wqe,
-					  struct sk_buff *skb)
+void mlx5e_ipsec_tx_build_eseg(struct mlx5e_priv *priv, struct sk_buff *skb,
+			       struct mlx5_wqe_eth_seg *eseg)
 {
-#ifdef CONFIG_MLX5_IPSEC
-	struct mlx5_accel_trailer  *tr = &sq->trailer;
-#endif
+	struct xfrm_offload *xo = xfrm_offload(skb);
+	struct xfrm_encap_tmpl  *encap;
+	struct xfrm_state *x;
+	struct sec_path *sp;
+	u8 l3_proto;
+
+	sp = skb_sec_path(skb);
+	if (unlikely(sp->len != 1))
+		return;
+
+	x = xfrm_input_state(skb);
+	if (unlikely(!x))
+		return;
+
+	if (unlikely(!x->xso.offload_handle ||
+		     (skb->protocol != htons(ETH_P_IP) &&
+		      skb->protocol != htons(ETH_P_IPV6))))
+		return;
+
+	mlx5e_ipsec_set_swp(skb, eseg, x->props.mode, xo);
+
+	l3_proto = (x->props.family == AF_INET) ?
+		   ((struct iphdr *)skb_network_header(skb))->protocol :
+		   ((struct ipv6hdr *)skb_network_header(skb))->nexthdr;
+
+	if (mlx5_is_ipsec_device(priv->mdev)) {
+		eseg->flow_table_metadata |= cpu_to_be32(MLX5_ETH_WQE_FT_META_IPSEC);
+		eseg->trailer |= cpu_to_be32(MLX5_ETH_WQE_INSERT_TRAILER);
+		encap = x->encap;
+		if (!encap) {
+			eseg->trailer |= (l3_proto == IPPROTO_ESP) ?
+				cpu_to_be32(MLX5_ETH_WQE_TRAILER_HDR_OUTER_IP_ASSOC) :
+				cpu_to_be32(MLX5_ETH_WQE_TRAILER_HDR_OUTER_L4_ASSOC);
+		} else if (encap->encap_type == UDP_ENCAP_ESPINUDP) {
+			eseg->trailer |= (l3_proto == IPPROTO_ESP) ?
+				cpu_to_be32(MLX5_ETH_WQE_TRAILER_HDR_INNER_IP_ASSOC) :
+				cpu_to_be32(MLX5_ETH_WQE_TRAILER_HDR_INNER_L4_ASSOC);
+		}
+	}
+}
+
+bool mlx5e_ipsec_handle_tx_skb(struct net_device *netdev,
+			       struct sk_buff *skb,
+			       struct mlx5e_accel_tx_ipsec_state *ipsec_st)
+{
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 	struct xfrm_offload *xo = xfrm_offload(skb);
-	struct mlx5e_ipsec_metadata *mdata;
 	struct mlx5e_ipsec_sa_entry *sa_entry;
+	struct mlx5e_ipsec_metadata *mdata = NULL;
 	struct xfrm_state *x;
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	struct sec_path *sp;
 #endif
 
-	if (!xo)
-		return skb;
-
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	sp = skb_sec_path(skb);
 	if (unlikely(sp->len != 1)) {
 #else
@@ -364,26 +381,18 @@ struct sk_buff *mlx5e_ipsec_handle_tx_skb(struct net_device *netdev,
 		}
 	}
 
-	mlx5e_ipsec_set_swp(skb, &wqe->eth, x->props.mode, xo);
 	sa_entry = (struct mlx5e_ipsec_sa_entry *)x->xso.offload_handle;
 	sa_entry->set_iv_op(skb, x, xo);
-	if (MLX5_CAP_GEN(priv->mdev, fpga)) {
+	if (MLX5_CAP_GEN(priv->mdev, fpga))
 		mlx5e_ipsec_set_metadata(skb, mdata, xo);
-#ifdef CONFIG_MLX5_IPSEC
-	} else {
-		/* Must be cx ipsec device */
-		if (mlx5e_ipsec_set_trailer(skb, tr, x, xo))
-			goto drop;
 
-		mlx5e_ipsec_set_ft_metadata(wqe);
-#endif
-	}
+	mlx5e_ipsec_set_state(priv, skb, x, xo, ipsec_st);
 
-	return skb;
+	return true;
 
 drop:
 	kfree_skb(skb);
-	return NULL;
+	return false;
 }
 
 static inline struct xfrm_state *
@@ -393,12 +402,12 @@ mlx5e_ipsec_build_sp(struct net_device *netdev, struct sk_buff *skb,
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 	struct xfrm_offload *xo;
 	struct xfrm_state *xs;
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	struct sec_path *sp;
 #endif
 	u32 sa_handle;
 
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	sp = secpath_set(skb);
 	if (unlikely(!sp)) {
 #else
@@ -416,7 +425,7 @@ mlx5e_ipsec_build_sp(struct net_device *netdev, struct sk_buff *skb,
 		return NULL;
 	}
 
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	sp = skb_sec_path(skb);
 	sp->xvec[sp->len++] = xs;
 	sp->olen++;
@@ -482,18 +491,17 @@ void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 				       struct mlx5_cqe64 *cqe)
 {
 	u32 ipsec_meta_data = be32_to_cpu(cqe->ft_metadata);
-	u8 ipsec_syndrome = ipsec_meta_data & 0xFF;
 	struct mlx5e_priv *priv;
 	struct xfrm_offload *xo;
 	struct xfrm_state *xs;
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	struct sec_path *sp;
 #endif
 	u32  sa_handle;
 
 	sa_handle = MLX5_IPSEC_METADATA_HANDLE(ipsec_meta_data);
 	priv = netdev_priv(netdev);
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	sp = secpath_set(skb);
 	if (unlikely(!sp)) {
 #else
@@ -510,7 +518,7 @@ void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 		return;
 	}
 
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	sp = skb_sec_path(skb);
 	sp->xvec[sp->len++] = xs;
 	sp->olen++;
@@ -522,7 +530,7 @@ void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 	xo = xfrm_offload(skb);
 	xo->flags = CRYPTO_DONE;
 
-	switch (ipsec_syndrome & MLX5_IPSEC_METADATA_SYNDROM_MASK) {
+	switch (MLX5_IPSEC_METADATA_SYNDROM(ipsec_meta_data)) {
 	case MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_DECRYPTED:
 		xo->status = CRYPTO_SUCCESS;
 		if (WARN_ON_ONCE(priv->ipsec->no_trailer))
@@ -542,12 +550,12 @@ void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 bool mlx5e_ipsec_feature_check(struct sk_buff *skb, struct net_device *netdev,
 			       netdev_features_t features)
 {
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	struct sec_path *sp = skb_sec_path(skb);
 #endif
 	struct xfrm_state *x;
 
-#if defined(HAVE_SK_BUFF_STRUCT_SOCK_SK) && defined(SECPATH_SET_RETURN_POINTER)
+#ifdef SECPATH_SET_RETURN_POINTER
 	if (sp && sp->len) {
 		x = sp->xvec[0];
 #else
@@ -598,4 +606,38 @@ int mlx5e_ipsec_set_flow_attrs(struct mlx5e_priv *priv, u32 *match_c, u32 *match
 	mdata_c->content.rx.sa_handle = 0xFFFFFFFF;
 	mdata_v->content.rx.sa_handle = htonl(handle);
 	return 0;
+}
+
+__wsum  mlx5e_ipsec_offload_handle_rx_csum(struct sk_buff *skb, struct mlx5_cqe64 *cqe)
+{
+	unsigned int tr_len, alen;
+	struct xfrm_offload *xo;
+	struct ipv6hdr *ipv6hdr;
+	struct iphdr *ipv4hdr;
+	__wsum csum, hw_csum;
+	struct xfrm_state *x;
+	u8 plen, proto;
+
+	xo = xfrm_offload(skb);
+	x = xfrm_input_state(skb);
+	alen = crypto_aead_authsize(x->data);
+	skb_copy_bits(skb, skb->len - alen - 2, &plen, 1);
+	skb_copy_bits(skb, skb->len - alen - 1, &proto, 1);
+	tr_len = alen + plen + 2;
+	csum = skb_checksum(skb, skb->len - tr_len, tr_len, 0);
+	hw_csum = csum_unfold((__force __sum16)cqe->check_sum);
+	csum = csum_block_sub(csum_unfold((__force __sum16)cqe->check_sum), csum,
+			      skb->len - tr_len);
+	pskb_trim(skb, skb->len - tr_len);
+	xo->flags |= XFRM_ESP_NO_TRAILER;
+	xo->proto = proto;
+	if (skb->protocol == htons(ETH_P_IP)) {
+		ipv4hdr = ip_hdr(skb);
+		ipv4hdr->tot_len = htons(ntohs(ipv4hdr->tot_len) - tr_len);
+	} else {
+		ipv6hdr = ipv6_hdr(skb);
+		ipv6hdr->payload_len = htons(ntohs(ipv6hdr->payload_len) - tr_len);
+	}
+
+	return csum;
 }

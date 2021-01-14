@@ -147,11 +147,7 @@ void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv)
 {
 	int i;
 
-#ifdef HAVE_NETDEV_HW_FEATURES
 	if (!(priv->netdev->hw_features & NETIF_F_NTUPLE))
-#else
-	if (true)
-#endif
 		return;
 
 	arfs_del_rules(priv);
@@ -216,7 +212,7 @@ static int arfs_create_groups(struct mlx5e_flow_table *ft,
 			sizeof(*ft->g), GFP_KERNEL);
 	in = kvzalloc(inlen, GFP_KERNEL);
 	if  (!in || !ft->g) {
-		kvfree(ft->g);
+		kfree(ft->g);
 		kvfree(in);
 		return -ENOMEM;
 	}
@@ -333,11 +329,7 @@ int mlx5e_arfs_create_tables(struct mlx5e_priv *priv)
 	int err = 0;
 	int i;
 
-#ifdef HAVE_NETDEV_HW_FEATURES
 	if (!(priv->netdev->hw_features & NETIF_F_NTUPLE))
-#else
-	if (true)
-#endif
 		return 0;
 
 	spin_lock_init(&priv->fs.arfs.arfs_lock);
@@ -683,10 +675,8 @@ int mlx5e_rx_flow_steer(struct net_device *dev, const struct sk_buff *skb,
 	    fk.basic.n_proto != htons(ETH_P_IPV6))
 		return -EPROTONOSUPPORT;
 
-#ifdef HAVE_SK_BUFF_ENCAPSULATION
 	if (skb->encapsulation)
 		return -EPROTONOSUPPORT;
-#endif
 
 	arfs_t = arfs_get_table(arfs, fk.basic.ip_proto, fk.basic.n_proto);
 	if (!arfs_t)

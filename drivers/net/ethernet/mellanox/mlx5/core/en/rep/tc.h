@@ -27,7 +27,9 @@ void mlx5e_rep_update_flows(struct mlx5e_priv *priv,
 			    unsigned char ha[ETH_ALEN]);
 
 int mlx5e_rep_encap_entry_attach(struct mlx5e_priv *priv,
-				 struct mlx5e_encap_entry *e);
+				 struct mlx5e_encap_entry *e,
+				 struct mlx5e_neigh *m_neigh,
+				 struct net_device *neigh_dev);
 void mlx5e_rep_encap_entry_detach(struct mlx5e_priv *priv,
 				  struct mlx5e_encap_entry *e);
 
@@ -46,8 +48,9 @@ int mlx5e_rep_setup_tc(struct net_device *dev, u32 handle,
 #endif
 #endif
 
+#ifndef HAVE_FLOW_INDR_DEV_REGISTER
 void mlx5e_rep_indr_clean_block_privs(struct mlx5e_rep_priv *rpriv);
-
+#endif
 bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 			     struct sk_buff *skb,
 			     struct mlx5e_tc_update_priv *tc_priv);
@@ -102,8 +105,10 @@ static inline int mlx5e_rep_setup_tc(struct net_device *dev, u32 handle,
 }
 #endif
 
+#ifndef HAVE_FLOW_INDR_DEV_REGISTER
 static inline void
 mlx5e_rep_indr_clean_block_privs(struct mlx5e_rep_priv *rpriv) {}
+#endif
 
 struct mlx5e_tc_update_priv;
 static inline bool

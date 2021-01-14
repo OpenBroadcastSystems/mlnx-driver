@@ -1,36 +1,27 @@
-From: Alaa Hleihel <alaa@mellanox.com>
-Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/lib/gid.c
+From: Valentine Fatiev <valentinef@mellanox.com>
+Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.h
 
-Change-Id: Ia9cc99c6a9f66ed3bbd1116947310c51bb5aaf9f
+Change-Id: I74f6d8ab1edf7f3406ac53d522a34a05979a3757
 ---
- drivers/net/ethernet/mellanox/mlx5/core/lib/gid.c | 16 ++++++++++++++++
- 1 file changed, 16 insertions(+)
+ drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.h | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
 
---- a/drivers/net/ethernet/mellanox/mlx5/core/lib/gid.c
-+++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/gid.c
-@@ -45,9 +45,25 @@ void mlx5_init_reserved_gids(struct mlx5
- 	dev->roce.reserved_gids.count = 0;
- }
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.h
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.h
+@@ -47,14 +47,14 @@ struct l2addr_node {
  
-+#if !defined(HAVE_IDA_IS_EMPTY) && !defined(HAVE_IDR_IS_EMPTY)
-+static int idr_has_entry(int id, void *p, void *data)
-+{
-+	return 1;
-+}
-+
-+bool idr_is_empty(struct idr *idp)
-+{
-+	return !idr_for_each(idp, idr_has_entry, NULL);
-+}
-+#endif
-+
- void mlx5_cleanup_reserved_gids(struct mlx5_core_dev *dev)
- {
-+#ifdef HAVE_IDA_IS_EMPTY
- 	WARN_ON(!ida_is_empty(&dev->roce.reserved_gids.ida));
-+#else
-+	WARN_ON(!idr_is_empty(&dev->roce.reserved_gids.ida.idr));
-+#endif
- 	dev->roce.reserved_gids.start = 0;
- 	dev->roce.reserved_gids.count = 0;
- 	ida_destroy(&dev->roce.reserved_gids.ida);
+ #define for_each_l2hash_node(hn, tmp, hash, i) \
+ 	for (i = 0; i < MLX5_L2_ADDR_HASH_SIZE; i++) \
+-		hlist_for_each_entry_safe(hn, tmp, &(hash)[i], hlist)
++		compat_hlist_for_each_entry_safe(hn, tmp, &hash[i], hlist)
+ 
+ #define l2addr_hash_find(hash, mac, type) ({                \
+ 	int ix = MLX5_L2_ADDR_HASH(mac);                    \
+ 	bool found = false;                                 \
+ 	type *ptr = NULL;                                   \
+ 							    \
+-	hlist_for_each_entry(ptr, &(hash)[ix], node.hlist)  \
++	compat_hlist_for_each_entry(ptr, &hash[ix], node.hlist)    \
+ 		if (ether_addr_equal(ptr->node.addr, mac)) {\
+ 			found = true;                       \
+ 			break;                              \

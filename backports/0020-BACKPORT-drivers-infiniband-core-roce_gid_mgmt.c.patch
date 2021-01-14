@@ -1,10 +1,10 @@
-From: Talat Batheesh <talatb@mellanox.com>
+From: Valentine Fatiev <valentinef@mellanox.com>
 Subject: [PATCH] BACKPORT: drivers/infiniband/core/roce_gid_mgmt.c
 
-Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
+Change-Id: I5b82013ef23366a974c02f3499fd2a359c93a23c
 ---
- drivers/infiniband/core/roce_gid_mgmt.c | 167 ++++++++++++++++++++++++++------
- 1 file changed, 137 insertions(+), 30 deletions(-)
+ drivers/infiniband/core/roce_gid_mgmt.c | 194 ++++++++++++++++++++----
+ 1 file changed, 162 insertions(+), 32 deletions(-)
 
 --- a/drivers/infiniband/core/roce_gid_mgmt.c
 +++ b/drivers/infiniband/core/roce_gid_mgmt.c
@@ -28,8 +28,8 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
 +
  static struct workqueue_struct *gid_cache_wq;
  
- bool roce_v1_noncompat_gid = true;
-@@ -138,12 +147,17 @@ static enum bonding_slave_state is_eth_a
+ enum gid_op_type {
+@@ -133,12 +142,17 @@ static enum bonding_slave_state is_eth_a
  								   struct net_device *upper)
  {
  	if (upper && netif_is_bond_master(upper)) {
@@ -47,7 +47,39 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  	}
  
  	return BONDING_SLAVE_STATE_NA;
-@@ -378,6 +392,7 @@ static void enum_netdev_ipv4_ips(struct
+@@ -333,7 +347,9 @@ static void bond_delete_netdev_default_g
+ static void enum_netdev_ipv4_ips(struct ib_device *ib_dev,
+ 				 u8 port, struct net_device *ndev)
+ {
++#ifndef HAVE_FOR_IFA
+ 	const struct in_ifaddr *ifa;
++#endif
+ 	struct in_device *in_dev;
+ 	struct sin_list {
+ 		struct list_head	list;
+@@ -353,7 +369,11 @@ static void enum_netdev_ipv4_ips(struct
+ 		return;
+ 	}
+ 
++#ifndef HAVE_FOR_IFA
+ 	in_dev_for_each_ifa_rcu(ifa, in_dev) {
++#else
++	for_ifa(in_dev) {
++#endif
+ 		struct sin_list *entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
+ 
+ 		if (!entry)
+@@ -363,6 +383,9 @@ static void enum_netdev_ipv4_ips(struct
+ 		entry->ip.sin_addr.s_addr = ifa->ifa_address;
+ 		list_add_tail(&entry->list, &sin_list);
+ 	}
++#ifdef HAVE_FOR_IFA
++	endfor_ifa(in_dev);
++#endif
+ 
+ 	rcu_read_unlock();
+ 
+@@ -374,6 +397,7 @@ static void enum_netdev_ipv4_ips(struct
  	}
  }
  
@@ -55,19 +87,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  static void enum_netdev_ipv6_ips(struct ib_device *ib_dev,
  				 u8 port, struct net_device *ndev)
  {
-@@ -400,7 +415,11 @@ static void enum_netdev_ipv6_ips(struct
- 		return;
- 
- 	read_lock_bh(&in6_dev->lock);
-+#ifdef HAVE_INET6_IF_LIST
- 	list_for_each_entry(ifp, &in6_dev->addr_list, if_list) {
-+#else
-+	for (ifp=in6_dev->addr_list; ifp; ifp=ifp->if_next) {
-+#endif
- 		struct sin6_list *entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
- 
- 		if (!entry)
-@@ -423,13 +442,15 @@ static void enum_netdev_ipv6_ips(struct
+@@ -419,13 +443,15 @@ static void enum_netdev_ipv6_ips(struct
  		kfree(sin6_iter);
  	}
  }
@@ -85,7 +105,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  }
  
  static void add_netdev_ips(struct ib_device *ib_dev, u8 port,
-@@ -444,27 +465,6 @@ static void del_netdev_ips(struct ib_dev
+@@ -440,27 +466,6 @@ static void del_netdev_ips(struct ib_dev
  	ib_cache_gid_del_all_netdev_gids(ib_dev, port, cookie);
  }
  
@@ -113,7 +133,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  static void add_default_gids(struct ib_device *ib_dev, u8 port,
  			     struct net_device *rdma_ndev, void *cookie)
  {
-@@ -488,7 +488,9 @@ static void enum_all_gids_of_dev_cb(stru
+@@ -484,7 +489,9 @@ static void enum_all_gids_of_dev_cb(stru
  	 * our feet
  	 */
  	rtnl_lock();
@@ -123,7 +143,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  	for_each_net(net)
  		for_each_netdev(net, ndev) {
  			/*
-@@ -504,7 +506,9 @@ static void enum_all_gids_of_dev_cb(stru
+@@ -500,7 +507,9 @@ static void enum_all_gids_of_dev_cb(stru
  							 rdma_ndev, ndev))
  				_add_netdev_ips(ib_dev, port, ndev);
  		}
@@ -133,7 +153,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  	rtnl_unlock();
  }
  
-@@ -536,6 +540,9 @@ static void callback_for_addr_gid_device
+@@ -532,16 +541,27 @@ static void callback_for_addr_gid_device
  			  &parsed->gid_attr);
  }
  
@@ -143,7 +163,26 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  struct upper_list {
  	struct list_head list;
  	struct net_device *upper;
-@@ -555,6 +562,7 @@ static int netdev_upper_walk(struct net_
+ };
+ 
+ static int netdev_upper_walk(struct net_device *upper,
+-			     struct netdev_nested_priv *priv)
++#ifdef HAVE_NETDEV_NESTED_PRIV_STRUCT
++				struct netdev_nested_priv *priv)
++#else	
++				void *data)
++#endif
+ {
+ 	struct upper_list *entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
++#ifdef HAVE_NETDEV_NESTED_PRIV_STRUCT
+ 	struct list_head *upper_list = (struct list_head *)priv->data;
++#else	
++	struct list_head *upper_list = data;
++#endif
+ 
+ 	if (!entry)
+ 		return 0;
+@@ -552,6 +572,7 @@ static int netdev_upper_walk(struct net_
  
  	return 0;
  }
@@ -151,10 +190,13 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  
  static void handle_netdev_upper(struct ib_device *ib_dev, u8 port,
  				void *cookie,
-@@ -563,13 +571,52 @@ static void handle_netdev_upper(struct i
+@@ -560,15 +581,64 @@ static void handle_netdev_upper(struct i
  						      struct net_device *ndev))
  {
  	struct net_device *ndev = cookie;
++#ifdef HAVE_NETDEV_NESTED_PRIV_STRUCT
+ 	struct netdev_nested_priv priv;
++#endif
 +#ifndef HAVE_NETDEV_WALK_ALL_UPPER_DEV_RCU
 +	struct upper_list {
 +		struct list_head list;
@@ -172,7 +214,12 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
 +#ifdef MLX_USE_LAG_COMPAT
 +	rtnl_lock();
 +#endif
++
++#ifdef HAVE_NETDEV_NESTED_PRIV_STRUCT
+ 	priv.data = &upper_list;
++#endif
  	rcu_read_lock();
+-	netdev_walk_all_upper_dev_rcu(ndev, netdev_upper_walk, &priv);
 +#ifndef HAVE_NETDEV_WALK_ALL_UPPER_DEV_RCU
 +#ifndef MLX_USE_LAG_COMPAT
 +	netdev_for_each_all_upper_dev_rcu(ndev, upper, iter) {
@@ -195,7 +242,12 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
 +		entry->upper = upper;
 +	}
 +#else /* HAVE_NETDEV_WALK_ALL_UPPER_DEV_RCU */
- 	netdev_walk_all_upper_dev_rcu(ndev, netdev_upper_walk, &upper_list);
++	netdev_walk_all_upper_dev_rcu(ndev, netdev_upper_walk, 
++#ifdef HAVE_NETDEV_NESTED_PRIV_STRUCT
++			&priv);
++#else
++			&upper_list);			
++#endif
 +#endif /* HAVE_NETDEV_WALK_ALL_UPPER_DEV_RCU */
  	rcu_read_unlock();
 +#ifdef MLX_USE_LAG_COMPAT
@@ -204,7 +256,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  
  	handle_netdev(ib_dev, port, ndev);
  	list_for_each_entry_safe(upper_iter, upper_temp, &upper_list,
-@@ -599,6 +646,8 @@ static void add_netdev_upper_ips(struct
+@@ -598,6 +668,8 @@ static void add_netdev_upper_ips(struct
  	handle_netdev_upper(ib_dev, port, cookie, _add_netdev_ips);
  }
  
@@ -213,7 +265,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  static void del_netdev_default_ips_join(struct ib_device *ib_dev, u8 port,
  					struct net_device *rdma_ndev,
  					void *cookie)
-@@ -673,11 +722,33 @@ static const struct netdev_event_work_cm
+@@ -672,11 +744,33 @@ static const struct netdev_event_work_cm
  	.filter	= is_eth_port_of_netdev_filter
  };
  
@@ -250,7 +302,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  static void
  ndev_event_unlink(struct netdev_notifier_changeupper_info *changeupper_info,
  		  struct netdev_event_work_cmd *cmds)
-@@ -693,9 +764,9 @@ ndev_event_unlink(struct netdev_notifier
+@@ -692,9 +786,9 @@ ndev_event_unlink(struct netdev_notifier
  	cmds[1] = add_cmd;
  }
  
@@ -263,7 +315,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  };
  
  static void
-@@ -736,6 +807,7 @@ static void netdevice_event_changeupper(
+@@ -735,6 +829,7 @@ static void netdevice_event_changeupper(
  	else
  		ndev_event_unlink(changeupper_info, cmds);
  }
@@ -271,7 +323,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  
  static const struct netdev_event_work_cmd add_default_gid_cmd = {
  	.cb	= add_default_gids,
-@@ -758,9 +830,22 @@ static int netdevice_event(struct notifi
+@@ -757,9 +852,22 @@ static int netdevice_event(struct notifi
  				.filter = is_eth_port_of_netdev_filter
  			};
  	static const struct netdev_event_work_cmd bonding_event_ips_del_cmd = {
@@ -295,7 +347,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  
  	if (ndev->type != ARPHRD_ETHER)
  		return NOTIFY_DONE;
-@@ -768,6 +853,9 @@ static int netdevice_event(struct notifi
+@@ -767,6 +875,9 @@ static int netdevice_event(struct notifi
  	switch (event) {
  	case NETDEV_REGISTER:
  	case NETDEV_UP:
@@ -305,7 +357,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  		cmds[0] = bonding_default_del_cmd_join;
  		cmds[1] = add_default_gid_cmd;
  		cmds[2] = add_cmd;
-@@ -788,18 +876,24 @@ static int netdevice_event(struct notifi
+@@ -787,18 +898,24 @@ static int netdevice_event(struct notifi
  		}
  		break;
  
@@ -330,7 +382,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  		break;
  
  	default:
-@@ -904,6 +998,13 @@ static struct notifier_block nb_inet6add
+@@ -903,6 +1020,13 @@ static struct notifier_block nb_inet6add
  	.notifier_call = inet6addr_event
  };
  
@@ -344,7 +396,7 @@ Change-Id: I7103651c4260d3ae678b94686f5c7299e8cea573
  int __init roce_gid_mgmt_init(void)
  {
  	gid_cache_wq = alloc_ordered_workqueue("gid-cache-wq", 0);
-@@ -920,11 +1021,17 @@ int __init roce_gid_mgmt_init(void)
+@@ -919,11 +1043,17 @@ int __init roce_gid_mgmt_init(void)
  	 */
  	register_netdevice_notifier(&nb_netdevice);
  

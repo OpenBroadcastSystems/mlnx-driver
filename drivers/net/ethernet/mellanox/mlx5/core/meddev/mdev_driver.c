@@ -8,7 +8,43 @@
 #include "mlx5_core.h"
 #include "meddev/sf.h"
 
-static const struct devlink_ops sf_devlink_ops = {};
+#ifdef HAVE_DEVLINK_HAS_RELOAD_UP_DOWN
+static int mlx5_devlink_reload_down(struct devlink *devlink,
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+			     bool netns_change,
+			     enum devlink_reload_action action,
+			     enum devlink_reload_limit limit,
+#elif defined(HAVE_DEVLINK_RELOAD_DOWN_HAS_3_PARAMS)
+			     bool netns_change,
+#endif
+   			     struct netlink_ext_ack *extack)
+{
+	struct mlx5_core_dev *dev = devlink_priv(devlink);
+
+	mlx5_unload_one(dev, false);
+	return 0;
+}
+
+static int mlx5_devlink_reload_up(struct devlink *devlink,
+#ifdef HAVE_DEVLINK_RELOAD_DOWN_SUPPORT_RELOAD_ACTION
+				  enum devlink_reload_action action,
+				  enum devlink_reload_limit limit,
+				  u32 *actions_performed,
+#endif
+				  struct netlink_ext_ack *extack)
+{
+	struct mlx5_core_dev *dev = devlink_priv(devlink);
+
+	return mlx5_load_one(dev, false);
+}
+#endif /* HAVE_DEVLINK_HAS_RELOAD_UP_DOWN */
+
+static const struct devlink_ops sf_devlink_ops = {
+#ifdef HAVE_DEVLINK_HAS_RELOAD_UP_DOWN
+	.reload_down = mlx5_devlink_reload_down,
+	.reload_up = mlx5_devlink_reload_up,
+#endif /* HAVE_DEVLINK_HAS_RELOAD_UP_DOWN */
+};
 
 static int mlx5_meddev_probe(struct device *dev)
 {
@@ -28,6 +64,7 @@ static int mlx5_meddev_probe(struct device *dev)
 	coredev->bar_addr = sf->bar_base_addr;
 	coredev->iseg_base = sf->bar_base_addr;
 	coredev->coredev_type = MLX5_COREDEV_SF;
+	coredev->disable_en = sf->disable_en;
 
 	sf->dev = coredev;
 	ret = mlx5_sf_load(sf);

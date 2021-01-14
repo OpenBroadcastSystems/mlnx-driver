@@ -57,7 +57,7 @@ struct mlx5_fpga_ipsec_cmd_context {
 	struct completion complete;
 	struct mlx5_fpga_device *dev;
 	struct list_head list; /* Item in pending_cmds */
-	u8 command[0];
+	u8 command[];
 };
 
 struct mlx5_fpga_esp_xfrm;
@@ -675,7 +675,8 @@ static bool mlx5_is_fpga_egress_ipsec_rule(struct mlx5_core_dev *dev,
 static void *mlx5_fpga_ipsec_create_sa_ctx(struct mlx5_core_dev *mdev,
 					   struct mlx5_accel_esp_xfrm *accel_xfrm,
 					   const __be32 saddr[4], const __be32 daddr[4],
-					   const __be32 spi, bool is_ipv6, u32 *sa_handle)
+					   const __be32 spi, bool is_ipv6, u32 pdn,
+					   u32 *sa_handle)
 {
 	struct mlx5_fpga_ipsec_sa_ctx *sa_ctx;
 	struct mlx5_fpga_esp_xfrm *fpga_xfrm =
@@ -724,7 +725,6 @@ static void *mlx5_fpga_ipsec_create_sa_ctx(struct mlx5_core_dev *mdev,
 		if (sa_handle)
 			*sa_handle = sa_ctx->sa_handle;
 	}
-
 	/* This is unbounded fpga_xfrm, try to add to hash */
 	mutex_lock(&fipsec->sa_hash_lock);
 
@@ -765,7 +765,6 @@ delete_hash:
 				       rhash_sa));
 unlock_hash:
 	mutex_unlock(&fipsec->sa_hash_lock);
-
 	if (accel_xfrm->attrs.action == MLX5_ACCEL_ESP_ACTION_DECRYPT)
 		ida_simple_remove(&fipsec->halloc, sa_ctx->sa_handle);
 exists:
@@ -839,7 +838,7 @@ mlx5_fpga_ipsec_fs_create_sa_ctx(struct mlx5_core_dev *mdev,
 	/* create */
 	return mlx5_fpga_ipsec_create_sa_ctx(mdev, accel_xfrm,
 					     saddr, daddr,
-					     spi, is_ipv6, NULL);
+					     spi, is_ipv6, 0, NULL);
 }
 
 static void
@@ -1568,7 +1567,7 @@ change_sw_xfrm_attrs:
 	return err;
 }
 
-const struct mlx5_accel_ipsec_ops fpga_ipsec_ops = {
+static const struct mlx5_accel_ipsec_ops fpga_ipsec_ops = {
 	.device_caps = mlx5_fpga_ipsec_device_caps,
 	.counters_count = mlx5_fpga_ipsec_counters_count,
 	.counters_read = mlx5_fpga_ipsec_counters_read,

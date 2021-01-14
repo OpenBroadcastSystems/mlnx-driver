@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
 /* Copyright (c) 2019 Mellanox Technologies. */
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+
+#ifdef HAVE_XSK_SUPPORT
 
 #include "tx.h"
 #include "umem.h"
 #include "en/xdp.h"
 #include "en/params.h"
+#ifdef HAVE_XDP_SOCK_DRV_H
+#include <net/xdp_sock_drv.h>
+#else
 #include <net/xdp_sock.h>
+#endif
 
 int mlx5e_xsk_wakeup(struct net_device *dev, u32 qid, u32 flags)
 {
@@ -37,9 +42,9 @@ int mlx5e_xsk_wakeup(struct net_device *dev, u32 qid, u32 flags)
 		if (test_and_set_bit(MLX5E_SQ_STATE_PENDING_XSK_TX, &c->async_icosq.state))
 			return 0;
 
-		spin_lock(&c->async_icosq_lock);
+		spin_lock_bh(&c->async_icosq_lock);
 		mlx5e_trigger_irq(&c->async_icosq);
-		spin_unlock(&c->async_icosq_lock);
+		spin_unlock_bh(&c->async_icosq_lock);
 	}
 
 	return 0;
@@ -68,16 +73,20 @@ static void mlx5e_xsk_tx_post_err(struct mlx5e_xdpsq *sq,
 bool mlx5e_xsk_tx(struct mlx5e_xdpsq *sq, unsigned int budget)
 {
 	struct xdp_umem *umem = sq->umem;
+	struct mlx5e_xmit_data xdptxd;
 	struct mlx5e_xdp_info xdpi;
-	struct mlx5e_xdp_xmit_data xdptxd;
 	bool work_done = true;
 	bool flush = false;
 
 	xdpi.mode = MLX5E_XDP_XMIT_MODE_XSK;
 
 	for (; budget; budget--) {
-		int check_result = sq->xmit_xdp_frame_check(sq);
+		int check_result = INDIRECT_CALL_2(sq->xmit_xdp_frame_check,
+						   mlx5e_xmit_xdp_frame_check_mpwqe,
+						   mlx5e_xmit_xdp_frame_check,
+						   sq);
 		struct xdp_desc desc;
+		bool ret;
 
 		if (unlikely(check_result < 0)) {
 			work_done = false;
@@ -93,14 +102,25 @@ bool mlx5e_xsk_tx(struct mlx5e_xdpsq *sq, unsigned int budget)
 			break;
 		}
 
+#ifdef HAVE_XSK_BUFF_ALLOC
+		xdptxd.dma_addr = xsk_buff_raw_get_dma(umem, desc.addr);
+		xdptxd.data = xsk_buff_raw_get_data(umem, desc.addr);
+#else
 		xdptxd.dma_addr = xdp_umem_get_dma(umem, desc.addr);
 		xdptxd.data = xdp_umem_get_data(umem, desc.addr);
+#endif
 		xdptxd.len = desc.len;
 
+#ifdef HAVE_XSK_BUFF_ALLOC
+		xsk_buff_raw_dma_sync_for_device(umem, xdptxd.dma_addr, xdptxd.len);
+#else
 		dma_sync_single_for_device(sq->pdev, xdptxd.dma_addr,
 					   xdptxd.len, DMA_BIDIRECTIONAL);
+#endif
 
-		if (unlikely(!sq->xmit_xdp_frame(sq, &xdptxd, &xdpi, check_result))) {
+		ret = INDIRECT_CALL_2(sq->xmit_xdp_frame, mlx5e_xmit_xdp_frame_mpwqe,
+				      mlx5e_xmit_xdp_frame, sq, &xdptxd, &xdpi, check_result);
+		if (unlikely(!ret)) {
 			if (sq->mpwqe.wqe)
 				mlx5e_xdp_mpwqe_complete(sq);
 
@@ -120,4 +140,5 @@ bool mlx5e_xsk_tx(struct mlx5e_xdpsq *sq, unsigned int budget)
 
 	return !(budget && work_done);
 }
-#endif /*HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS*/
+
+#endif /* HAVE_XSK_SUPPORT */

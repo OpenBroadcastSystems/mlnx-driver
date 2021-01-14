@@ -1,26 +1,26 @@
-From: Alaa Hleihel <alaa@mellanox.com>
-Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/lib/clock.h
+From: Valentine Fatiev <valentinef@mellanox.com>
+Subject: [PATCH] BACKPORT: drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.c
 
-Change-Id: Iddb2ce2c77952b8a324311e8e5cdb149c941ce59
+Change-Id: Icfab4d409722d7b2f2b57b1d1df69298973dc387
 ---
- drivers/net/ethernet/mellanox/mlx5/core/lib/clock.h | 6 ++++--
- 1 file changed, 4 insertions(+), 2 deletions(-)
+ drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.c | 2 ++
+ 1 file changed, 2 insertions(+)
 
---- a/drivers/net/ethernet/mellanox/mlx5/core/lib/clock.h
-+++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/clock.h
-@@ -40,11 +40,13 @@ static inline ktime_t mlx5_timecounter_c
- 						u64 timestamp)
- {
- 	u64 nsec;
--
-+#if defined (HAVE_PTP_CLOCK_INFO) && (defined (CONFIG_PTP_1588_CLOCK) || defined(CONFIG_PTP_1588_CLOCK_MODULE))
- 	read_lock(&clock->lock);
- 	nsec = timecounter_cyc2time(&clock->tc, timestamp);
- 	read_unlock(&clock->lock);
--
-+#else
-+	nsec = 0 ;
-+#endif
- 	return ns_to_ktime(nsec);
- }
+--- a/drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.c
++++ b/drivers/net/ethernet/mellanox/mlx5/core/lib/mpfs.c
+@@ -135,6 +135,7 @@ int mlx5_mpfs_add_mac(struct mlx5_core_d
+ 	struct l2table_node *l2addr;
+ 	int err = 0;
+ 	u32 index;
++	COMPAT_HL_NODE
  
+ 	if (!MLX5_ESWITCH_MANAGER(dev))
+ 		return 0;
+@@ -182,6 +183,7 @@ int mlx5_mpfs_del_mac(struct mlx5_core_d
+ 	struct l2table_node *l2addr;
+ 	int err = 0;
+ 	u32 index;
++	COMPAT_HL_NODE
+ 
+ 	if (!MLX5_ESWITCH_MANAGER(dev))
+ 		return 0;

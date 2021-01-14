@@ -146,6 +146,10 @@ int mlx5dr_cmd_query_device(struct mlx5_core_dev *mdev,
 			MLX5_CAP_GEN(mdev, flex_parser_id_icmpv6_dw1);
 	}
 
+	if (caps->flex_protocols & MLX5_FLEX_PARSER_GENEVE_TLV_OPTION_0_ENABLED)
+		caps->flex_parser_id_geneve_tlv_option_0 =
+			MLX5_CAP_GEN(mdev, flex_parser_id_geneve_tlv_option_0);
+
 	caps->nic_rx_drop_address =
 		MLX5_CAP64_FLOWTABLE(mdev, sw_steering_nic_rx_action_drop_icm_address);
 	caps->nic_tx_drop_address =
@@ -210,6 +214,36 @@ int mlx5dr_cmd_query_flow_table(struct mlx5_core_dev *dev,
 						 flow_table_context.sw_owner_icm_root_1);
 	output->sw_owner_icm_root_0 = MLX5_GET64(query_flow_table_out, out,
 						 flow_table_context.sw_owner_icm_root_0);
+
+	return 0;
+}
+
+int mlx5dr_cmd_query_flow_sampler(struct mlx5_core_dev *dev,
+				  u32 sampler_id,
+				  u64 *rx_icm_addr,
+				  u64 *tx_icm_addr)
+{
+	u32 out[MLX5_ST_SZ_DW(query_sampler_obj_out)] = {};
+	u32 in[MLX5_ST_SZ_DW(general_obj_in_cmd_hdr)] = {};
+	void *attr;
+	int ret;
+
+	MLX5_SET(general_obj_in_cmd_hdr, in, opcode,
+		 MLX5_CMD_OP_QUERY_GENERAL_OBJECT);
+	MLX5_SET(general_obj_in_cmd_hdr, in, obj_type,
+		 MLX5_GENERAL_OBJECT_TYPES_SAMPLER);
+	MLX5_SET(general_obj_in_cmd_hdr, in, obj_id, sampler_id);
+
+	ret = mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	if (ret)
+		return ret;
+
+	attr = MLX5_ADDR_OF(query_sampler_obj_out, out, sampler_object);
+
+	*rx_icm_addr = MLX5_GET64(sampler_obj, attr,
+				  sw_steering_icm_address_rx);
+	*tx_icm_addr = MLX5_GET64(sampler_obj, attr,
+				  sw_steering_icm_address_tx);
 
 	return 0;
 }
@@ -734,6 +768,9 @@ int mlx5dr_cmd_set_fte(struct mlx5_core_dev *dev,
 						 packet_reformat_id,
 						 fte->dest_arr[i].vport.reformat_id);
 				}
+				break;
+			case MLX5_FLOW_DESTINATION_TYPE_FLOW_SAMPLER:
+				id = fte->dest_arr[i].sampler_id;
 				break;
 			default:
 				id = fte->dest_arr[i].tir_num;

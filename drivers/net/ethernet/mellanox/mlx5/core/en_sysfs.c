@@ -35,11 +35,10 @@
 #include <linux/dcbnl.h>
 #include "en.h"
 #include "en_ecn.h"
+#include "en_tc.h"
 #include "eswitch.h"
-#ifdef HAVE_IEEE_DCBNL_ETS
 #ifdef CONFIG_MLX5_CORE_EN_DCB
 #include "en/port_buffer.h"
-#endif
 #endif
 
 #define MLX5E_SKPRIOS_NUM   16
@@ -56,7 +55,6 @@ struct netdev_queue_attribute {
 };
 #endif
 
-#if defined(HAVE_NETDEV_GET_NUM_TC) && defined(HAVE_NETDEV_SET_NUM_TC)
 static ssize_t mlx5e_show_tc_num(struct device *device,
 				 struct device_attribute *attr,
 				 char *buf)
@@ -100,7 +98,6 @@ static ssize_t mlx5e_store_tc_num(struct device *device,
 	rtnl_unlock();
 	return count;
 }
-#endif
 
 static  ssize_t mlx5e_show_maxrate(struct device *device,
 				   struct device_attribute *attr,
@@ -209,10 +206,8 @@ out:
 
 static DEVICE_ATTR(maxrate, S_IRUGO | S_IWUSR,
 		   mlx5e_show_maxrate, mlx5e_store_maxrate);
-#if defined(HAVE_NETDEV_GET_NUM_TC) && defined(HAVE_NETDEV_SET_NUM_TC)
 static DEVICE_ATTR(tc_num, S_IRUGO | S_IWUSR,
 		   mlx5e_show_tc_num, mlx5e_store_tc_num);
-#endif
 
 static ssize_t mlx5e_show_lro_timeout(struct device *device,
 				      struct device_attribute *attr,
@@ -785,7 +780,6 @@ static void mlx5e_remove_attributes(struct mlx5e_priv *priv,
 	}
 }
 
-#ifdef HAVE_IEEE_DCBNL_ETS
 #ifdef CONFIG_MLX5_CORE_EN_DCB
 static ssize_t mlx5e_show_prio2buffer(struct device *device,
 				      struct device_attribute *attr,
@@ -928,9 +922,7 @@ static ssize_t mlx5e_store_buffer_size(struct device *device,
 	return count;
 }
 #endif
-#endif
 
-#ifdef HAVE_IEEE_DCBNL_ETS
 #ifdef CONFIG_MLX5_CORE_EN_DCB
 static DEVICE_ATTR(buffer_size, S_IRUGO | S_IWUSR,
 		   mlx5e_show_buffer_size,
@@ -939,7 +931,6 @@ static DEVICE_ATTR(buffer_size, S_IRUGO | S_IWUSR,
 static DEVICE_ATTR(prio2buffer, S_IRUGO | S_IWUSR,
 		   mlx5e_show_prio2buffer,
 		   mlx5e_store_prio2buffer);
-#endif
 #endif
 
 #ifdef CONFIG_MLX5_ESWITCH
@@ -1020,9 +1011,7 @@ static struct attribute *mlx5e_debug_group_attrs[] = {
 };
 
 static struct attribute *mlx5e_qos_attrs[] = {
-#if defined(HAVE_NETDEV_GET_NUM_TC) && defined(HAVE_NETDEV_SET_NUM_TC)
 	&dev_attr_tc_num.attr,
-#endif
 	&dev_attr_maxrate.attr,
 	NULL,
 };
@@ -1073,7 +1062,6 @@ static int update_qos_sysfs(struct net_device *dev,
 {
 	int err = 0;
 
-#ifdef HAVE_IEEE_DCBNL_ETS
 #ifdef CONFIG_MLX5_CORE_EN_DCB
 	if (MLX5_BUFFER_SUPPORTED(mdev)) {
 		err = sysfs_add_file_to_group(&dev->dev.kobj,
@@ -1083,7 +1071,6 @@ static int update_qos_sysfs(struct net_device *dev,
 					      &dev_attr_buffer_size.attr,
 					      "qos");
 	}
-#endif
 #endif
 
 	return err;
@@ -1112,6 +1099,289 @@ static int update_settings_sysfs(struct net_device *dev,
 
 	return err;
 }
+
+#if IS_ENABLED(CONFIG_MLX5_CLS_ACT)
+struct prio_hp_attributes {
+	struct attribute attr;
+	ssize_t (*show)(struct mlx5_prio_hp *, struct prio_hp_attributes *,
+			char *buf);
+	ssize_t (*store)(struct mlx5_prio_hp *, struct prio_hp_attributes *,
+			 const char *buf, size_t count);
+};
+
+static ssize_t prio_hp_attr_show(struct kobject *kobj,
+				 struct attribute *attr, char *buf)
+{
+	struct prio_hp_attributes *ga =
+		container_of(attr, struct prio_hp_attributes, attr);
+	struct mlx5_prio_hp *g = container_of(kobj, struct mlx5_prio_hp, kobj);
+
+	if (!ga->show)
+		return -EIO;
+
+	return ga->show(g, ga, buf);
+}
+
+static ssize_t prio_hp_attr_store(struct kobject *kobj,
+				  struct attribute *attr,
+				  const char *buf, size_t size)
+{
+	struct prio_hp_attributes *ga =
+		container_of(attr, struct prio_hp_attributes, attr);
+	struct mlx5_prio_hp *g = container_of(kobj, struct mlx5_prio_hp, kobj);
+
+	if (!ga->store)
+		return -EIO;
+
+	return ga->store(g, ga, buf, size);
+}
+
+static const struct sysfs_ops prio_hp_ops = {
+	.show = prio_hp_attr_show,
+	.store = prio_hp_attr_store,
+};
+
+static ssize_t rate_store(struct mlx5_prio_hp *g,
+			  struct prio_hp_attributes *oa,
+			  const char *buf,
+			  size_t count)
+{
+	struct mlx5e_priv *priv = g->priv;
+	struct mlx5_core_dev *mdev = priv->mdev;
+	int user_rate, rate;
+	int err;
+
+	if (sscanf(buf, "%d", &user_rate) != 1)
+		return -EINVAL;
+
+	if (user_rate == g->rate)
+		/* nothing to do */
+		return count;
+
+	if (!mlx5_rl_is_supported(mdev)) {
+		netdev_err(priv->netdev, "Rate limiting is not supported on this device\n");
+		return -EINVAL;
+	}
+
+	/* rate is given in Mb/sec, HW config is in Kb/sec */
+	rate = user_rate << 10;
+
+	/* Check whether rate in valid range, 0 is always valid */
+	if (rate && !mlx5_rl_is_in_range(mdev, rate)) {
+		netdev_err(priv->netdev, "TX rate %u, is not in range\n", rate);
+		return -ERANGE;
+	}
+
+	mutex_lock(&priv->state_lock);
+	if (test_bit(MLX5E_STATE_OPENED, &priv->state)) {
+		err = mlx5e_set_prio_hairpin_rate(priv, g->prio, rate);
+		if (err) {
+			mutex_unlock(&priv->state_lock);
+
+			return err;
+		}
+	}
+
+	g->rate = user_rate;
+	mutex_unlock(&priv->state_lock);
+
+	return count;
+}
+
+static ssize_t rate_show(struct mlx5_prio_hp *g, struct prio_hp_attributes *oa,
+			 char *buf)
+{
+	return sprintf(buf, "%d\n", g->rate);
+}
+
+#define PRIO_HP_ATTR(_name) struct prio_hp_attributes prio_hp_attr_##_name = \
+	__ATTR(_name, 0644, _name##_show, _name##_store)
+PRIO_HP_ATTR(rate);
+
+static struct attribute *prio_hp_attrs[] = {
+	&prio_hp_attr_rate.attr,
+	NULL
+};
+
+static struct kobj_type prio_hp_sysfs = {
+	.sysfs_ops     = &prio_hp_ops,
+	.default_attrs = prio_hp_attrs
+};
+
+int create_prio_hp_sysfs(struct mlx5e_priv *priv, int prio)
+{
+	struct mlx5e_tc_table *tc = &priv->fs.tc;
+	struct mlx5_prio_hp *prio_hp = tc->prio_hp;
+	int err;
+
+	err = kobject_init_and_add(&prio_hp[prio].kobj, &prio_hp_sysfs, tc->hp_config,
+				   "%d", prio);
+	if (err) {
+		netdev_err(priv->netdev, "can't create hp queues per q sysfs %d, err %d\n",
+			   prio, err);
+		return err;
+	}
+
+	kobject_uevent(&prio_hp[prio].kobj, KOBJ_ADD);
+
+	return 0;
+}
+
+static ssize_t prio_hp_num_store(struct device *device, struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
+	struct mlx5e_tc_table *tc = &priv->fs.tc;
+	struct net_device *peer_dev;
+	char ifname[IFNAMSIZ];
+	int num_hp;
+	int err;
+
+	err = sscanf(buf, "%d %15s", &num_hp, ifname);
+	if (err != 2)
+		return -EINVAL;
+
+	if (num_hp < 0 || num_hp > MLX5E_MAX_HP_PRIO)
+		return -EINVAL;
+
+	rtnl_lock();
+	mutex_lock(&priv->state_lock);
+
+	peer_dev = __dev_get_by_name(dev_net(priv->netdev), ifname);
+	if (!peer_dev)
+		return -EINVAL;
+
+	if (num_hp && !tc->num_prio_hp) {
+		err = mlx5e_prio_hairpin_mode_enable(priv, num_hp, peer_dev);
+		if (err)
+			goto err_config;
+	} else if (!num_hp && tc->num_prio_hp) {
+		err = mlx5e_prio_hairpin_mode_disable(priv);
+		if (err)
+			goto err_config;
+	} else {
+		err = -EINVAL;
+		goto err_config;
+	}
+
+	mutex_unlock(&priv->state_lock);
+	rtnl_unlock();
+
+	return count;
+
+err_config:
+	mutex_unlock(&priv->state_lock);
+	rtnl_unlock();
+	return err;
+}
+
+static ssize_t prio_hp_num_show(struct device *device, struct device_attribute *attr,
+				char *buf)
+{
+	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
+	struct mlx5e_tc_table *tc = &priv->fs.tc;
+	ssize_t result;
+
+	mutex_lock(&priv->state_lock);
+	result = sprintf(buf, "%d\n", tc->num_prio_hp);
+	mutex_unlock(&priv->state_lock);
+
+	return result;
+}
+
+
+/* Limiting max packet pacing burst size configuration using
+ * a typical 1514 Byte MTU size.
+ */
+#define MLX5E_MAX_HP_PP_BURST_MTUS 30
+#define MLX5E_MAX_HP_PP_BURST_SIZE (MLX5E_MAX_HP_PP_BURST_MTUS * 1514)
+static ssize_t pp_burst_size_store(struct device *device, struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
+	struct mlx5e_tc_table *tc = &priv->fs.tc;
+	int burst_size;
+	int err;
+
+	if (!MLX5_CAP_QOS(priv->mdev, packet_pacing_burst_bound)) {
+		netdev_warn(priv->netdev, "Packet pacing burst size config is not supported by the device\n");
+		return -EOPNOTSUPP;
+	}
+
+	err = sscanf(buf, "%d", &burst_size);
+	if (err != 1)
+		return -EINVAL;
+
+	if (burst_size < 0 || burst_size > MLX5E_MAX_HP_PP_BURST_SIZE)
+		return -EINVAL;
+
+	rtnl_lock();
+	mutex_lock(&priv->state_lock);
+
+	tc->max_pp_burst_size = burst_size;
+
+	mutex_unlock(&priv->state_lock);
+	rtnl_unlock();
+
+	return count;
+}
+
+static ssize_t pp_burst_size_show(struct device *device, struct device_attribute *attr,
+				  char *buf)
+{
+	struct mlx5e_priv *priv = netdev_priv(to_net_dev(device));
+	struct mlx5e_tc_table *tc = &priv->fs.tc;
+	ssize_t result;
+
+	mutex_lock(&priv->state_lock);
+	result = sprintf(buf, "%d\n", tc->max_pp_burst_size);
+	mutex_unlock(&priv->state_lock);
+
+	return result;
+}
+
+static DEVICE_ATTR(num_prio_hp, S_IRUGO | S_IWUSR,
+		   prio_hp_num_show, prio_hp_num_store);
+static DEVICE_ATTR(hp_pp_burst_size, S_IRUGO | S_IWUSR,
+		   pp_burst_size_show, pp_burst_size_store);
+
+static struct device_attribute *mlx5_class_attributes[] = {
+	&dev_attr_num_prio_hp,
+	&dev_attr_hp_pp_burst_size,
+};
+
+int hp_sysfs_init(struct mlx5e_priv *priv)
+{
+	struct device *device = &priv->netdev->dev;
+	int i, err;
+
+	for (i = 0; i < ARRAY_SIZE(mlx5_class_attributes); i++) {
+		err = device_create_file(device, mlx5_class_attributes[i]);
+		if (err)
+			return err;
+	}
+
+	return 0;
+}
+
+void hp_sysfs_cleanup(struct mlx5e_priv *priv)
+{
+	struct device *device = &priv->netdev->dev;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(mlx5_class_attributes); i++)
+		device_remove_file(device, mlx5_class_attributes[i]);
+}
+
+#else
+
+int hp_sysfs_init(struct mlx5e_priv *priv)
+{ return 0; }
+
+void hp_sysfs_cleanup(struct mlx5e_priv *priv)
+{}
+
+#endif /*CONFIG_MLX5_CLS_ACT*/
 
 int mlx5e_sysfs_create(struct net_device *dev)
 {
@@ -1157,10 +1427,16 @@ int mlx5e_sysfs_create(struct net_device *dev)
 	if (err)
 		goto remove_debug_group;
 
+	err = hp_sysfs_init(priv);
+	if (err)
+		goto remove_phy_stat_group;
+
 	mlx5_eswitch_compat_sysfs_init(dev);
 
 	return 0;
 
+remove_phy_stat_group:
+	sysfs_remove_group(&dev->dev.kobj, &phy_stat_group);
 remove_debug_group:
 	sysfs_remove_group(&dev->dev.kobj, &debug_group);
 remove_qos_group:
@@ -1196,6 +1472,7 @@ void mlx5e_sysfs_remove(struct net_device *dev)
 	sysfs_remove_group(&dev->dev.kobj, &debug_group);
 	sysfs_remove_group(&dev->dev.kobj, &settings_group);
 	sysfs_remove_group(&dev->dev.kobj, &phy_stat_group);
+	hp_sysfs_cleanup(priv);
 
 	for (i = 1; i < MLX5E_CONG_PROTOCOL_NUM; i++) {
 		mlx5e_remove_attributes(priv, i);

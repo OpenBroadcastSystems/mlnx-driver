@@ -6,7 +6,7 @@
 #include "lib/mlx5.h"
 
 #ifdef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
-int mlx5e_reporter_named_obj_nest_start(struct devlink_fmsg *fmsg, char *name)
+int mlx5e_health_fmsg_named_obj_nest_start(struct devlink_fmsg *fmsg, char *name)
 {
 	int err;
 
@@ -21,7 +21,7 @@ int mlx5e_reporter_named_obj_nest_start(struct devlink_fmsg *fmsg, char *name)
 	return 0;
 }
 
-int mlx5e_reporter_named_obj_nest_end(struct devlink_fmsg *fmsg)
+int mlx5e_health_fmsg_named_obj_nest_end(struct devlink_fmsg *fmsg)
 {
 	int err;
 
@@ -36,22 +36,21 @@ int mlx5e_reporter_named_obj_nest_end(struct devlink_fmsg *fmsg)
 	return 0;
 }
 
-int mlx5e_reporter_cq_diagnose(struct mlx5e_cq *cq, struct devlink_fmsg *fmsg)
+int mlx5e_health_cq_diag_fmsg(struct mlx5e_cq *cq, struct devlink_fmsg *fmsg)
 {
-	struct mlx5e_priv *priv = cq->channel->priv;
 	u32 out[MLX5_ST_SZ_DW(query_cq_out)] = {};
 	u8 hw_status;
 	void *cqc;
 	int err;
 
-	err = mlx5_core_query_cq(priv->mdev, &cq->mcq, out);
+	err = mlx5_core_query_cq(cq->mdev, &cq->mcq, out);
 	if (err)
 		return err;
 
 	cqc = MLX5_ADDR_OF(query_cq_out, out, cq_context);
 	hw_status = MLX5_GET(cqc, cqc, status);
 
-	err = mlx5e_reporter_named_obj_nest_start(fmsg, "CQ");
+	err = mlx5e_health_fmsg_named_obj_nest_start(fmsg, "CQ");
 	if (err)
 		return err;
 
@@ -63,14 +62,22 @@ int mlx5e_reporter_cq_diagnose(struct mlx5e_cq *cq, struct devlink_fmsg *fmsg)
 	if (err)
 		return err;
 
-	err = mlx5e_reporter_named_obj_nest_end(fmsg);
+	err = devlink_fmsg_u32_pair_put(fmsg, "ci", mlx5_cqwq_get_ci(&cq->wq));
+	if (err)
+		return err;
+
+	err = devlink_fmsg_u32_pair_put(fmsg, "size", mlx5_cqwq_get_size(&cq->wq));
+	if (err)
+		return err;
+
+	err = mlx5e_health_fmsg_named_obj_nest_end(fmsg);
 	if (err)
 		return err;
 
 	return 0;
 }
 
-int mlx5e_reporter_cq_common_diagnose(struct mlx5e_cq *cq, struct devlink_fmsg *fmsg)
+int mlx5e_health_cq_common_diag_fmsg(struct mlx5e_cq *cq, struct devlink_fmsg *fmsg)
 {
 	u8 cq_log_stride;
 	u32 cq_sz;
@@ -79,7 +86,7 @@ int mlx5e_reporter_cq_common_diagnose(struct mlx5e_cq *cq, struct devlink_fmsg *
 	cq_sz = mlx5_cqwq_get_size(&cq->wq);
 	cq_log_stride = mlx5_cqwq_get_log_stride_size(&cq->wq);
 
-	err = mlx5e_reporter_named_obj_nest_start(fmsg, "CQ");
+	err = mlx5e_health_fmsg_named_obj_nest_start(fmsg, "CQ");
 	if (err)
 		return err;
 
@@ -91,27 +98,49 @@ int mlx5e_reporter_cq_common_diagnose(struct mlx5e_cq *cq, struct devlink_fmsg *
 	if (err)
 		return err;
 
-	err = mlx5e_reporter_named_obj_nest_end(fmsg);
+	err = mlx5e_health_fmsg_named_obj_nest_end(fmsg);
 	if (err)
 		return err;
 
 	return 0;
 }
-#endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
 
-int mlx5e_health_create_reporters(struct mlx5e_priv *priv)
+int mlx5e_health_eq_diag_fmsg(struct mlx5_eq_comp *eq, struct devlink_fmsg *fmsg)
 {
 	int err;
 
-	err = mlx5e_reporter_tx_create(priv);
+	err = mlx5e_health_fmsg_named_obj_nest_start(fmsg, "EQ");
 	if (err)
 		return err;
 
-	err = mlx5e_reporter_rx_create(priv);
+	err = devlink_fmsg_u8_pair_put(fmsg, "eqn", eq->core.eqn);
 	if (err)
 		return err;
 
-	return 0;
+	err = devlink_fmsg_u32_pair_put(fmsg, "irqn", eq->core.irqn);
+	if (err)
+		return err;
+
+	err = devlink_fmsg_u32_pair_put(fmsg, "vecidx", eq->core.vecidx);
+	if (err)
+		return err;
+
+	err = devlink_fmsg_u32_pair_put(fmsg, "ci", eq->core.cons_index);
+	if (err)
+		return err;
+
+	err = devlink_fmsg_u32_pair_put(fmsg, "size", eq->core.nent);
+	if (err)
+		return err;
+
+	return mlx5e_health_fmsg_named_obj_nest_end(fmsg);
+}
+#endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
+
+void mlx5e_health_create_reporters(struct mlx5e_priv *priv)
+{
+	mlx5e_reporter_tx_create(priv);
+	mlx5e_reporter_rx_create(priv);
 }
 
 void mlx5e_health_destroy_reporters(struct mlx5e_priv *priv)
@@ -132,10 +161,8 @@ void mlx5e_health_channels_update(struct mlx5e_priv *priv)
 #endif /* HAVE_DEVLINK_HEALTH_REPORTER_STATE_UPDATE */
 }
 
-int mlx5e_health_sq_to_ready(struct mlx5e_channel *channel, u32 sqn)
+int mlx5e_health_sq_to_ready(struct mlx5_core_dev *mdev, struct net_device *dev, u32 sqn)
 {
-	struct mlx5_core_dev *mdev = channel->mdev;
-	struct net_device *dev = channel->netdev;
 	struct mlx5e_modify_sq_param msp = {};
 	int err;
 
@@ -180,21 +207,22 @@ out:
 	return err;
 }
 
-int mlx5e_health_channel_eq_recover(struct mlx5_eq_comp *eq, struct mlx5e_channel *channel)
+int mlx5e_health_channel_eq_recover(struct net_device *dev, struct mlx5_eq_comp *eq,
+				    struct mlx5e_ch_stats *stats)
 {
 	u32 eqe_count;
 
-	netdev_err(channel->netdev, "EQ 0x%x: Cons = 0x%x, irqn = 0x%x\n",
+	netdev_err(dev, "EQ 0x%x: Cons = 0x%x, irqn = 0x%x\n",
 		   eq->core.eqn, eq->core.cons_index, eq->core.irqn);
 
 	eqe_count = mlx5_eq_poll_irq_disabled(eq);
 	if (!eqe_count)
 		return -EIO;
 
-	netdev_err(channel->netdev, "Recovered %d eqes on EQ 0x%x\n",
+	netdev_err(dev, "Recovered %d eqes on EQ 0x%x\n",
 		   eqe_count, eq->core.eqn);
 
-	channel->stats->eq_rearm++;
+	stats->eq_rearm++;
 	return 0;
 }
 
@@ -202,7 +230,7 @@ int mlx5e_health_report(struct mlx5e_priv *priv,
 			struct devlink_health_reporter *reporter, char *err_str,
 			struct mlx5e_err_ctx *err_ctx)
 {
-	netdev_err(priv->netdev, err_str);
+	netdev_err(priv->netdev, "%s\n", err_str);
 
 	if (!reporter)
 		return err_ctx->recover(err_ctx->ctx);
@@ -216,11 +244,11 @@ int mlx5e_health_report(struct mlx5e_priv *priv,
 
 #ifndef HAVE_DEVLINK_FMSG_BINARY_PUT
 #ifdef HAVE_DEVLINK_HEALTH_REPORT_SUPPORT
-static int devlink_fmsg_binary_put(struct devlink_fmsg *fmsg, const void *value,
-				   u16 value_len)
-{
-	return -EOPNOTSUPP;
-}
+ static int devlink_fmsg_binary_put(struct devlink_fmsg *fmsg, const void *value,
+ 				   u16 value_len)
+ {
+ 	return -EOPNOTSUPP;
+ }
 #endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */
 #endif
 
@@ -262,7 +290,11 @@ int mlx5e_health_rsc_fmsg_dump(struct mlx5e_priv *priv, struct mlx5_rsc_key *key
 	if (!page)
 		return -ENOMEM;
 
+#ifdef HAVE_DEVLINK_FMSG_BINARY_PAIR_NEST_START
+	err = devlink_fmsg_binary_pair_nest_start(fmsg, "data");
+#else
 	err = devlink_fmsg_arr_pair_nest_start(fmsg, "data");
+#endif
 	if (err)
 		return err;
 
@@ -287,7 +319,12 @@ int mlx5e_health_rsc_fmsg_dump(struct mlx5e_priv *priv, struct mlx5_rsc_key *key
 
 destroy_cmd:
 	mlx5_rsc_dump_cmd_destroy(cmd);
+#ifdef HAVE_DEVLINK_FMSG_BINARY_PAIR_NEST_START
+	end_err = devlink_fmsg_binary_pair_nest_end(fmsg);
+#else
 	end_err = devlink_fmsg_arr_pair_nest_end(fmsg);
+#endif
+
 	if (end_err)
 		err = end_err;
 free_page:
@@ -310,7 +347,7 @@ int mlx5e_health_queue_dump(struct mlx5e_priv *priv, struct devlink_fmsg *fmsg,
 	if (err)
 		return err;
 
-	err = mlx5e_reporter_named_obj_nest_start(fmsg, lbl);
+	err = mlx5e_health_fmsg_named_obj_nest_start(fmsg, lbl);
 	if (err)
 		return err;
 
@@ -322,10 +359,11 @@ int mlx5e_health_queue_dump(struct mlx5e_priv *priv, struct devlink_fmsg *fmsg,
 	if (err)
 		return err;
 
-	err = mlx5e_reporter_named_obj_nest_end(fmsg);
+	err = mlx5e_health_fmsg_named_obj_nest_end(fmsg);
 	if (err)
 		return err;
 
 	return devlink_fmsg_obj_nest_end(fmsg);
 }
+
 #endif /* HAVE_DEVLINK_HEALTH_REPORT_SUPPORT */

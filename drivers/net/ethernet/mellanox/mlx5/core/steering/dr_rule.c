@@ -78,6 +78,7 @@ dr_rule_create_collision_entry(struct mlx5dr_matcher *matcher,
 	}
 
 	ste->ste_chain_location = orig_ste->ste_chain_location;
+	ste->htbl->pointing_ste = orig_ste->htbl->pointing_ste;
 
 	/* In collision entry, all members share the same miss_list_head */
 	ste->htbl->miss_list = mlx5dr_ste_get_miss_list(orig_ste);
@@ -182,6 +183,9 @@ dr_rule_rehash_handle_collision(struct mlx5dr_matcher *matcher,
 	if (!new_ste)
 		return NULL;
 
+	/* Update collision pointing STE */
+	new_ste->htbl->pointing_ste = col_ste->htbl->pointing_ste;
+
 	/* In collision entry, all members share the same miss_list_head */
 	new_ste->htbl->miss_list = mlx5dr_ste_get_miss_list(col_ste);
 
@@ -209,7 +213,7 @@ static void dr_rule_rehash_copy_ste_ctrl(struct mlx5dr_matcher *matcher,
 	new_ste->next_htbl = cur_ste->next_htbl;
 	new_ste->ste_chain_location = cur_ste->ste_chain_location;
 
-	if (!mlx5dr_ste_is_last_in_rule(nic_matcher, new_ste->ste_chain_location))
+	if (new_ste->next_htbl)
 		new_ste->next_htbl->pointing_ste = new_ste;
 
 	/* We need to copy the refcount since this ste
@@ -217,10 +221,8 @@ static void dr_rule_rehash_copy_ste_ctrl(struct mlx5dr_matcher *matcher,
 	 */
 	new_ste->refcount = cur_ste->refcount;
 
-	/* Link old STEs rule_mem list to the new ste */
-	mlx5dr_rule_update_rule_member(cur_ste, new_ste);
-	INIT_LIST_HEAD(&new_ste->rule_list);
-	list_splice_tail_init(&cur_ste->rule_list, &new_ste->rule_list);
+	/* Link old STEs rule to the new ste */
+	mlx5dr_rule_set_last_member(cur_ste->rule_rx_tx, new_ste, false);
 }
 
 static struct mlx5dr_ste *
@@ -578,35 +580,66 @@ free_action_members:
 	return -ENOMEM;
 }
 
-/* While the pointer of ste is no longer valid, like while moving ste to be
- * the first in the miss_list, and to be in the origin table,
- * all rule-members that are attached to this ste should update their ste member
- * to the new pointer
- */
-void mlx5dr_rule_update_rule_member(struct mlx5dr_ste *ste,
-				    struct mlx5dr_ste *new_ste)
+void mlx5dr_rule_set_last_member(struct mlx5dr_rule_rx_tx *nic_rule,
+				 struct mlx5dr_ste *ste,
+				 bool force)
 {
-	struct mlx5dr_rule_member *rule_mem;
+	/* Update rule member is usually done for the last STE or during rule
+	 * creation to recover from mid-creation failure (for this peruse the
+	 * force flag is used) */
+	if (ste->next_htbl && !force)
+		return;
 
-	if (!list_empty(&ste->rule_list))
-		list_for_each_entry(rule_mem, &ste->rule_list, use_ste_list)
-			rule_mem->ste = new_ste;
+	/* Update is required since each rule keeps track of its last STE */
+	ste->rule_rx_tx = nic_rule;
+	nic_rule->last_rule_ste = ste;
+}
+
+static struct mlx5dr_ste *dr_rule_get_pointed_ste(struct mlx5dr_ste *curr_ste)
+{
+	struct mlx5dr_ste *first_ste;
+
+	first_ste = list_first_entry(mlx5dr_ste_get_miss_list(curr_ste),
+				     struct mlx5dr_ste, miss_list_node);
+
+	return first_ste->htbl->pointing_ste;
+}
+
+int mlx5dr_rule_get_reverse_rule_members(struct mlx5dr_ste **ste_arr,
+					 struct mlx5dr_ste *curr_ste,
+					 int *num_of_stes)
+{
+	bool first = false;
+
+	*num_of_stes = 0;
+
+	if (curr_ste == NULL)
+		return -ENOENT;
+
+	/* Iterate from last to first */
+	while (!first) {
+		first = curr_ste->ste_chain_location == 1;
+		ste_arr[*num_of_stes] = curr_ste;
+		*num_of_stes += 1;
+		curr_ste = dr_rule_get_pointed_ste(curr_ste);
+	}
+
+	return 0;
 }
 
 static void dr_rule_clean_rule_members(struct mlx5dr_rule *rule,
 				       struct mlx5dr_rule_rx_tx *nic_rule)
 {
-	struct mlx5dr_rule_member *rule_mem;
-	struct mlx5dr_rule_member *tmp_mem;
+	struct mlx5dr_ste *ste_arr[DR_RULE_MAX_STES + DR_ACTION_MAX_STES];
+	struct mlx5dr_ste *curr_ste = nic_rule->last_rule_ste;
+	int i;
 
-	if (list_empty(&nic_rule->rule_members_list))
+	if (mlx5dr_rule_get_reverse_rule_members(ste_arr, curr_ste, &i))
 		return;
-	list_for_each_entry_safe(rule_mem, tmp_mem, &nic_rule->rule_members_list, list) {
-		list_del(&rule_mem->list);
-		list_del(&rule_mem->use_ste_list);
-		mlx5dr_ste_put(rule_mem->ste, rule->matcher, nic_rule->nic_matcher);
-		kvfree(rule_mem);
-	}
+
+	while (i--)
+		mlx5dr_ste_put(ste_arr[i], rule->matcher, nic_rule->nic_matcher);
+
 }
 
 static u16 dr_get_bits_per_mask(u16 byte_mask)
@@ -643,26 +676,6 @@ static bool dr_rule_need_enlarge_hash(struct mlx5dr_ste_htbl *htbl,
 	return false;
 }
 
-static int dr_rule_add_member(struct mlx5dr_rule_rx_tx *nic_rule,
-			      struct mlx5dr_ste *ste)
-{
-	struct mlx5dr_rule_member *rule_mem;
-
-	rule_mem = kvzalloc(sizeof(*rule_mem), GFP_KERNEL);
-	if (!rule_mem)
-		return -ENOMEM;
-
-	INIT_LIST_HEAD(&rule_mem->list);
-	INIT_LIST_HEAD(&rule_mem->use_ste_list);
-
-	rule_mem->ste = ste;
-	list_add_tail(&rule_mem->list, &nic_rule->rule_members_list);
-
-	list_add_tail(&rule_mem->use_ste_list, &ste->rule_list);
-
-	return 0;
-}
-
 static int dr_rule_handle_action_stes(struct mlx5dr_rule *rule,
 				      struct mlx5dr_rule_rx_tx *nic_rule,
 				      struct list_head *send_ste_list,
@@ -677,16 +690,13 @@ static int dr_rule_handle_action_stes(struct mlx5dr_rule *rule,
 	struct mlx5dr_domain *dmn = matcher->tbl->dmn;
 	u8 *curr_hw_ste, *prev_hw_ste;
 	struct mlx5dr_ste *action_ste;
-	int i, k, ret;
+	int i, k;
 
 	/* Two cases:
 	 * 1. num_of_builders is equal to new_hw_ste_arr_sz, the action in the ste
 	 * 2. num_of_builders is less then new_hw_ste_arr_sz, new ste was added
 	 *    to support the action.
 	 */
-	if (num_of_builders == new_hw_ste_arr_sz)
-		return 0;
-
 	for (i = num_of_builders, k = 0; i < new_hw_ste_arr_sz; i++, k++) {
 		curr_hw_ste = hw_ste_arr + i * DR_STE_SIZE;
 		prev_hw_ste = (i == 0) ? curr_hw_ste : hw_ste_arr + ((i - 1) * DR_STE_SIZE);
@@ -697,6 +707,10 @@ static int dr_rule_handle_action_stes(struct mlx5dr_rule *rule,
 			return -ENOMEM;
 
 		mlx5dr_ste_get(action_ste);
+
+		action_ste->htbl->pointing_ste = last_ste;
+		last_ste->next_htbl = action_ste->htbl;
+		last_ste = action_ste;
 
 		/* While free ste we go over the miss list, so add this ste to the list */
 		list_add_tail(&action_ste->miss_list_node,
@@ -711,21 +725,19 @@ static int dr_rule_handle_action_stes(struct mlx5dr_rule *rule,
 		mlx5dr_ste_set_hit_addr_by_next_htbl(dmn->ste_ctx,
 						     prev_hw_ste,
 						     action_ste->htbl);
-		ret = dr_rule_add_member(nic_rule, action_ste);
-		if (ret) {
-			mlx5dr_dbg(dmn, "Failed adding rule member\n");
-			goto free_ste_info;
-		}
+
+		mlx5dr_rule_set_last_member(nic_rule, action_ste, true);
+
 		mlx5dr_send_fill_and_append_ste_send_info(action_ste, DR_STE_SIZE, 0,
 							  curr_hw_ste,
 							  ste_info_arr[k],
 							  send_ste_list, false);
 	}
 
+	last_ste->next_htbl = NULL;
+
 	return 0;
 
-free_ste_info:
-	kfree(ste_info_arr[k]);
 err_exit:
 	mlx5dr_ste_put(action_ste, matcher, nic_matcher);
 	return -ENOMEM;
@@ -1019,37 +1031,28 @@ static enum mlx5dr_ipv dr_rule_get_ipv(struct mlx5dr_match_spec *spec)
 static bool dr_rule_skip(struct mlx5dr_domain *dmn,
 			 enum mlx5dr_ste_entry_type ste_type,
 			 struct mlx5dr_match_param *mask,
-			 struct mlx5dr_match_param *value)
+			 struct mlx5dr_match_param *value,
+			 u32 flow_source)
 {
+	bool rx = ste_type == MLX5DR_STE_TYPE_RX;
+
 	if (dmn->type != MLX5DR_DOMAIN_TYPE_FDB)
 		return false;
 
 	if (mask->misc.source_port) {
-		if (ste_type == MLX5DR_STE_TYPE_RX)
-			if (value->misc.source_port != WIRE_PORT)
-				return true;
+		if (rx && value->misc.source_port != WIRE_PORT)
+			return true;
 
-		if (ste_type == MLX5DR_STE_TYPE_TX)
-			if (value->misc.source_port == WIRE_PORT)
-				return true;
+		if (!rx && value->misc.source_port == WIRE_PORT)
+			return true;
 	}
 
-	/* Metadata C can be used to describe the source vport */
-	if (mask->misc2.metadata_reg_c_0) {
-		struct mlx5_eswitch *esw = dmn->mdev->priv.eswitch;
-		u32 wire_match_id =
-			mlx5_eswitch_get_vport_metadata_for_match(esw,
-								  WIRE_PORT);
-		if (ste_type == MLX5DR_STE_TYPE_RX)
-			if ((value->misc2.metadata_reg_c_0 &
-			     mask->misc2.metadata_reg_c_0) != wire_match_id)
-				return true;
+	if (rx && flow_source == MLX5_FLOW_CONTEXT_FLOW_SOURCE_LOCAL_VPORT)
+		return true;
 
-		if (ste_type == MLX5DR_STE_TYPE_TX)
-			if ((value->misc2.metadata_reg_c_0 &
-			     mask->misc2.metadata_reg_c_0) == wire_match_id)
-				return true;
-	}
+	if (!rx && flow_source == MLX5_FLOW_CONTEXT_FLOW_SOURCE_UPLINK)
+		return true;
+
 	return false;
 }
 
@@ -1076,10 +1079,13 @@ dr_rule_create_rule_nic(struct mlx5dr_rule *rule,
 	nic_matcher = nic_rule->nic_matcher;
 	nic_dmn = nic_matcher->nic_tbl->nic_dmn;
 
-	INIT_LIST_HEAD(&nic_rule->rule_members_list);
-
-	if (dr_rule_skip(dmn, nic_dmn->ste_type, &matcher->mask, param))
+	if (dr_rule_skip(dmn, nic_dmn->ste_type, &matcher->mask, param,
+			 rule->flow_source))
 		return 0;
+
+	hw_ste_arr = kzalloc(DR_RULE_MAX_STE_CHAIN * DR_STE_SIZE, GFP_KERNEL);
+	if (!hw_ste_arr)
+		return -ENOMEM;
 
 	mlx5dr_domain_nic_lock(nic_dmn);
 
@@ -1088,13 +1094,7 @@ dr_rule_create_rule_nic(struct mlx5dr_rule *rule,
 					     dr_rule_get_ipv(&param->outer),
 					     dr_rule_get_ipv(&param->inner));
 	if (ret)
-		goto out_err;
-
-	hw_ste_arr = kzalloc(DR_RULE_MAX_STE_CHAIN * DR_STE_SIZE, GFP_KERNEL);
-	if (!hw_ste_arr) {
-		ret = -ENOMEM;
-		goto out_err;
-	}
+		goto free_hw_ste;
 
 	/* Set the tag values inside the ste array */
 	ret = mlx5dr_ste_build_ste_arr(matcher, nic_matcher, param, hw_ste_arr);
@@ -1109,7 +1109,6 @@ dr_rule_create_rule_nic(struct mlx5dr_rule *rule,
 		goto free_hw_ste;
 
 	cur_htbl = nic_matcher->s_htbl;
-
 
 	/* Go over the array of STEs, and build dr_ste accordingly.
 	 * The loop is over only the builders which are equal or less to the
@@ -1134,14 +1133,8 @@ dr_rule_create_rule_nic(struct mlx5dr_rule *rule,
 
 		cur_htbl = ste->next_htbl;
 
-		/* Keep all STEs in the rule struct */
-		ret = dr_rule_add_member(nic_rule, ste);
-		if (ret) {
-			mlx5dr_dbg(dmn, "Failed adding rule member index %d\n", i);
-			goto free_ste;
-		}
-
 		mlx5dr_ste_get(ste);
+		mlx5dr_rule_set_last_member(nic_rule, ste, true);
 	}
 
 	/* Connect actions */
@@ -1151,6 +1144,7 @@ dr_rule_create_rule_nic(struct mlx5dr_rule *rule,
 		mlx5dr_dbg(dmn, "Failed apply actions\n");
 		goto free_rule;
 	}
+
 	ret = dr_rule_send_update_list(&send_ste_list, dmn, true);
 	if (ret) {
 		mlx5dr_err(dmn, "Failed sending ste!\n");
@@ -1166,8 +1160,6 @@ dr_rule_create_rule_nic(struct mlx5dr_rule *rule,
 
 	return 0;
 
-free_ste:
-	mlx5dr_ste_put(ste, matcher, nic_matcher);
 free_rule:
 	dr_rule_clean_rule_members(rule, nic_rule);
 	/* Clean all ste_info's */
@@ -1176,9 +1168,8 @@ free_rule:
 		kfree(ste_info);
 	}
 free_hw_ste:
-	kfree(hw_ste_arr);
-out_err:
 	mlx5dr_domain_nic_unlock(nic_dmn);
+	kfree(hw_ste_arr);
 	return ret;
 }
 
@@ -1217,7 +1208,8 @@ static struct mlx5dr_rule *
 dr_rule_create_rule(struct mlx5dr_matcher *matcher,
 		    struct mlx5dr_match_parameters *value,
 		    size_t num_actions,
-		    struct mlx5dr_action *actions[])
+		    struct mlx5dr_action *actions[],
+		    u32 flow_source)
 {
 	struct mlx5dr_domain *dmn = matcher->tbl->dmn;
 	struct mlx5dr_match_param param = {};
@@ -1232,6 +1224,7 @@ dr_rule_create_rule(struct mlx5dr_matcher *matcher,
 		return NULL;
 
 	rule->matcher = matcher;
+	rule->flow_source = flow_source;
 	INIT_LIST_HEAD(&rule->rule_actions_list);
 	INIT_LIST_HEAD(&rule->rule_list);
 
@@ -1281,13 +1274,15 @@ free_rule:
 struct mlx5dr_rule *mlx5dr_rule_create(struct mlx5dr_matcher *matcher,
 				       struct mlx5dr_match_parameters *value,
 				       size_t num_actions,
-				       struct mlx5dr_action *actions[])
+				       struct mlx5dr_action *actions[],
+				       u32 flow_source)
 {
 	struct mlx5dr_rule *rule;
 
 	refcount_inc(&matcher->refcount);
 
-	rule = dr_rule_create_rule(matcher, value, num_actions, actions);
+	rule = dr_rule_create_rule(matcher, value, num_actions, actions,
+				   flow_source);
 	if (!rule)
 		refcount_dec(&matcher->refcount);
 

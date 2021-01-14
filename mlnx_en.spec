@@ -34,20 +34,21 @@
 %global POWERKVM %(if (grep -qiE "powerkvm" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global BLUENIX %(if (grep -qiE "Bluenix" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
 %global XENSERVER65 %(if (grep -qiE "XenServer.*6\.5" /etc/issue /etc/*release* 2>/dev/null); then echo -n '1'; else echo -n '0'; fi)
-# Force python3 on RHEL8, fedora3x and similar:
-%global RHEL8 %(if test `grep -E '^(ID="(rhel|ol|centos)"|VERSION="8)' /etc/os-release 2>/dev/null | wc -l` -eq 2; then echo -n '1'; else echo -n '0'; fi)
-%global FEDORA3X %{!?fedora:0}%{?fedora:%(if [ %{fedora} -ge 30 ]; then echo 1; else echo 0; fi)}
-%global PYTHON3 %{RHEL8} || %{FEDORA3X}
+# Force python3 on RHEL8, fedora3x, SLES15 and similar:
+%global RHEL8 0%{?rhel} >= 8
+%global FEDORA3X 0%{?fedora} >= 30
+%global SLES15 0%{?suse_version} >= 1500
+%global PYTHON3 %{RHEL8} || %{FEDORA3X} || %{SLES15}
 
 # Workaround: To be removed when mlnx_tune has python3 support:
 # mlnx_tune is a python2 script. Avoid generating dependencies
 # from it in some distributions to avoid dragging in a python2
 # dependency
-%if (!%{KMP}) && %{RHEL8}
+%if %{PYTHON3}
 %global __requires_exclude_from mlnx_tune
 %endif
 
-%global IS_RHEL_VENDOR "%{_vendor}" == "redhat" || ("%{_vendor}" == "bclinux")
+%global IS_RHEL_VENDOR "%{_vendor}" == "redhat" || ("%{_vendor}" == "bclinux") || ("%{_vendor}" == "openEuler")
 
 %{!?MEMTRACK: %global MEMTRACK 0}
 %{!?MLX4: %global MLX4 1}
@@ -86,12 +87,12 @@
 %endif
 
 %{!?_name: %global _name mlnx-en}
-%{!?_version: %global _version 5.1}
-%{!?_release: %global _release 1.0.4.0.gc72091b}
+%{!?_version: %global _version 5.2}
+%{!?_release: %global _release 1.0.4.0.g13e6dd1}
 %global _kmp_rel %{_release}%{?_kmp_build_num}%{?_dist}
 
 %if %{PYTHON3}
-%global mlnx_python_env    export MLNX_PYTHON_EXECUTABLE=python3
+%global mlnx_python_env    export MLNX_PYTHON_EXECUTABLE=%{_bindir}/python3
 %global mlnx_python        python3
 %else
 %global mlnx_python_env    :
@@ -115,7 +116,7 @@ BuildRoot: %{?build_root:%{build_root}}%{!?build_root:/var/tmp/MLNX_EN}
 Summary: mlnx-en kernel module(s)
 %description
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.2-1.0.4.tgz
 
 %package doc
 Summary: Documentation for the Mellanox Ethernet Driver for Linux
@@ -123,7 +124,7 @@ Group: System/Kernel
 
 %description doc
 Documentation for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.2-1.0.4.tgz
 
 %package sources
 Summary: Sources for the Mellanox Ethernet Driver for Linux
@@ -131,7 +132,7 @@ Group: System Environment/Libraries
 
 %description sources
 Sources for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.2-1.0.4.tgz
 
 %package utils
 Summary: Utilities for the Mellanox Ethernet Driver for Linux
@@ -139,14 +140,14 @@ Group: System Environment/Libraries
 
 %description utils
 Utilities for the Mellanox Ethernet Driver for Linux
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.2-1.0.4.tgz
 
 %package KMP
 Summary: mlnx-en kernel module(s)
 Group: System/Kernel
 %description KMP
 mlnx-en kernel module(s)
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.2-1.0.4.tgz
 
 # build KMP rpms?
 %if "%{KMP}" == "1"
@@ -173,7 +174,7 @@ Group: System Environment/Base
 Summary: Ethernet NIC Driver
 %description -n mlnx_en
 ConnectX Ehternet device driver
-The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.1-1.0.4.tgz
+The driver sources are located at: http://www.mellanox.com/downloads/Drivers/mlnx-en-5.2-1.0.4.tgz
 %endif #end if "%{KMP}" == "1"
 
 #
@@ -316,6 +317,7 @@ install -D -m 755 source/ofed_scripts/set_irq_affinity_cpulist.sh %{buildroot}/%
 install -D -m 755 source/ofed_scripts/sysctl_perf_tuning %{buildroot}/sbin/sysctl_perf_tuning
 install -D -m 755 source/ofed_scripts/mlnx_bf_configure %{buildroot}/sbin/mlnx_bf_configure
 install -D -m 755 source/ofed_scripts/mlnx-sf %{buildroot}/sbin/mlnx-sf
+install -D -m 755 source/ofed_scripts/mlnx_bf_udev %{buildroot}/lib/udev/mlnx_bf_udev
 install -D -m 644 source/scripts/mlnx-en.conf %{buildroot}/etc/mlnx-en.conf
 install -D -m 755 source/scripts/mlnx-en.d %{buildroot}/etc/init.d/mlnx-en.d
 install -D -m 644 source/ofed_scripts/mlnx-bf.conf   %{buildroot}/etc/modprobe.d/mlnx-bf.conf
@@ -337,7 +339,8 @@ install -D -m 644 source/scripts/mlnx-en.d.service %{buildroot}/%{_unitdir}/mlnx
 %endif
 
 # Update /etc/init.d/mlnx-en.d service header
-if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then
+is_euler=`grep 'NAME=".*Euler' /etc/os-release 2>/dev/null || :`
+if [[ -f /etc/redhat-release || -f /etc/rocks-release || "$is_euler" != '' ]]; then
     perl -i -ne 'if (m@^#!/bin/bash@) {
         print q@#!/bin/bash
 #
@@ -403,8 +406,9 @@ fi
 %endif
 
 %post -n mlnx-en-utils
+is_euler=`grep 'NAME=".*Euler' /etc/os-release 2>/dev/null || :`
 if [ $1 -eq 1 ]; then # 1 : This package is being installed
-    if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then
+    if [[ -f /etc/redhat-release || -f /etc/rocks-release || "$is_euler" != '' ]]; then
         /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
         /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
         /sbin/chkconfig --del mlnx-en.d >/dev/null 2>&1 || true
@@ -447,11 +451,12 @@ fi # 1 : closed
 # END of post utils
 
 %preun -n mlnx-en-utils
+is_euler=`grep 'NAME=".*Euler' /etc/os-release 2>/dev/null || :`
 if [ $1 = 0 ]; then  # 1 : Erase, not upgrade
     /sbin/chkconfig mlnx-en.d off >/dev/null 2>&1 || true
     /usr/bin/systemctl disable mlnx-en.d >/dev/null 2>&1 || true
 
-    if [[ -f /etc/redhat-release || -f /etc/rocks-release ]]; then
+    if [[ -f /etc/redhat-release || -f /etc/rocks-release || "$is_euler" != '' ]]; then
         /sbin/chkconfig --del mlnx-en.d  >/dev/null 2>&1 || true
     fi
     if [ -f /etc/SuSE-release ] || [ -f /etc/SUSE-brand ]; then
@@ -500,6 +505,7 @@ rm -rf %{buildroot}
 %config(noreplace) /etc/modprobe.d/mlnx-bf.conf
 %{_sbindir}/*
 /sbin/*
+/lib/udev/mlnx_bf_udev
 %config(noreplace) /etc/mlnx-en.conf
 /etc/init.d/mlnx-en.d
 %if "%{WITH_SYSTEMD}" == "1"

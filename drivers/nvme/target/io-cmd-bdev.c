@@ -52,7 +52,7 @@ void nvmet_bdev_set_limits(struct block_device *bdev, struct nvme_id_ns *id)
 
 static void nvmet_bdev_ns_enable_integrity(struct nvmet_ns *ns)
 {
-#if defined(CONFIG_BLK_DEV_INTEGRITY_T10) && \
+#if defined(CONFIG_BLK_DEV_INTEGRITY) && \
 	defined(HAVE_BLKDEV_BIO_INTEGRITY_BYTES)
 	struct blk_integrity *bi = bdev_get_integrity(ns->bdev);
 
@@ -89,7 +89,7 @@ int nvmet_bdev_ns_enable(struct nvmet_ns *ns)
 
 	ns->pi_type = 0;
 	ns->metadata_size = 0;
-	if (IS_ENABLED(CONFIG_BLK_DEV_INTEGRITY_T10))
+	if (IS_ENABLED(CONFIG_BLK_DEV_INTEGRITY))
 		nvmet_bdev_ns_enable_integrity(ns);
 
 	return 0;
@@ -146,7 +146,6 @@ static u16 blk_to_nvme_status(struct nvmet_req *req, blk_status_t blk_sts)
 		req->error_loc = offsetof(struct nvme_rw_command, nsid);
 		break;
 	case BLK_STS_IOERR:
-		/* fallthru */
 	default:
 		status = NVME_SC_INTERNAL | NVME_SC_DNR;
 		req->error_loc = offsetof(struct nvme_common_command, opcode);
@@ -433,7 +432,11 @@ static void nvmet_bdev_execute_flush(struct nvmet_req *req)
 
 u16 nvmet_bdev_flush(struct nvmet_req *req)
 {
+#ifdef HAVE_BLKDEV_ISSUE_FLUSH_2_PARAM
+	if (blkdev_issue_flush(req->ns->bdev, GFP_KERNEL))
+#else
 	if (blkdev_issue_flush(req->ns->bdev, GFP_KERNEL, NULL))
+#endif
 		return NVME_SC_INTERNAL | NVME_SC_DNR;
 	return 0;
 }

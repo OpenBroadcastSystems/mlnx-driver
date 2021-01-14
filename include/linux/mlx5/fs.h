@@ -86,6 +86,7 @@ enum mlx5_flow_namespace_type {
 enum {
 	FDB_BYPASS_PATH,
 	FDB_CRYPTO_INGRESS,
+	FDB_E2E_CACHE,
 	FDB_TC_OFFLOAD,
 	FDB_FT_OFFLOAD,
 	FDB_SLOW_PATH,
@@ -135,6 +136,7 @@ struct mlx5_flow_destination {
 			struct mlx5_pkt_reformat *pkt_reformat;
 			u8		flags;
 		} vport;
+		u32			sampler_id;
 	};
 };
 

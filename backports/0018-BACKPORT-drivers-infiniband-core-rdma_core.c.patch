@@ -1,10 +1,10 @@
-From: Talat Batheesh <talatb@mellanox.com>
+From: Valentine Fatiev <valentinef@mellanox.com>
 Subject: [PATCH] BACKPORT: drivers/infiniband/core/rdma_core.c
 
-Change-Id: Icf172e7fc8d54246725f7c91420bbd9f857ae6a8
+Change-Id: I88eff06328a224c3c703380d715ee3c78b7f58fd
 ---
- drivers/infiniband/core/rdma_core.c | 20 +++++++++++++++++---
- 1 file changed, 17 insertions(+), 3 deletions(-)
+ drivers/infiniband/core/rdma_core.c | 19 +++++++++++++++++--
+ 1 file changed, 17 insertions(+), 2 deletions(-)
 
 --- a/drivers/infiniband/core/rdma_core.c
 +++ b/drivers/infiniband/core/rdma_core.c
@@ -22,7 +22,7 @@ Change-Id: Icf172e7fc8d54246725f7c91420bbd9f857ae6a8
  			-EBUSY : 0;
  	case UVERBS_LOOKUP_WRITE:
  		/* lock is exclusive */
-@@ -435,15 +441,19 @@ alloc_begin_idr_uobject(const struct uve
+@@ -452,15 +458,19 @@ alloc_begin_idr_uobject(const struct uve
  	if (ret)
  		goto uobj_put;
  
@@ -42,7 +42,7 @@ Change-Id: Icf172e7fc8d54246725f7c91420bbd9f857ae6a8
  uobj_put:
  	uverbs_uobject_put(uobj);
  	return ERR_PTR(ret);
-@@ -516,9 +526,10 @@ struct ib_uobject *rdma_alloc_begin_uobj
+@@ -539,9 +549,10 @@ struct ib_uobject *rdma_alloc_begin_uobj
  
  static void alloc_abort_idr_uobject(struct ib_uobject *uobj)
  {
@@ -54,7 +54,7 @@ Change-Id: Icf172e7fc8d54246725f7c91420bbd9f857ae6a8
  	xa_erase(&uobj->ufile->idr, uobj->id);
  }
  
-@@ -542,15 +553,17 @@ static int __must_check destroy_hw_idr_u
+@@ -565,15 +576,17 @@ static int __must_check destroy_hw_idr_u
  	if (why == RDMA_REMOVE_ABORT)
  		return 0;
  
@@ -73,7 +73,7 @@ Change-Id: Icf172e7fc8d54246725f7c91420bbd9f857ae6a8
  	/* Matches the kref in alloc_commit_idr_uobject */
  	uverbs_uobject_put(uobj);
  }
-@@ -799,8 +812,10 @@ static void ufile_destroy_ucontext(struc
+@@ -828,8 +841,10 @@ static void ufile_destroy_ucontext(struc
  			ib_dev->ops.disassociate_ucontext(ucontext);
  	}
  

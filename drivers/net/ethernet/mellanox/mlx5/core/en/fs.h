@@ -11,10 +11,22 @@ enum {
 	MLX5E_TC_TTC_FT_LEVEL,
 };
 
+struct mlx5_prio_hp {
+	u32 rate;
+	struct kobject kobj;
+	struct mlx5e_priv *priv;
+	u32 prio;
+};
+
+#define MLX5E_MAX_HP_PRIO 1000
+
 struct mlx5e_tc_table {
-	/* protects flow table */
+	/* Protects the dynamic assignment of the t parameter
+	 * which is the nic tc root table.
+	 */
 	struct mutex			t_lock;
 	struct mlx5_flow_table		*t;
+	struct mlx5_fs_chains           *chains;
 
 	struct rhashtable               ht;
 
@@ -22,10 +34,22 @@ struct mlx5e_tc_table {
 	struct mod_hdr_tbl mod_hdr;
 #endif
 	struct mutex hairpin_tbl_lock; /* protects hairpin_tbl */
-	DECLARE_HASHTABLE(hairpin_tbl, 8);
+	DECLARE_HASHTABLE(hairpin_tbl, 16);
+	struct kobject *hp_config;
+	struct mlx5_prio_hp *prio_hp;
+	struct mlx5e_priv *prio_hp_ppriv;
+	int num_prio_hp;
+	atomic_t hp_fwd_ref_cnt;
+	struct mlx5_flow_table *hp_fwd;
+	struct mlx5_flow_group *hp_fwd_g;
+	u32 max_pp_burst_size;
 
 	struct notifier_block     netdevice_nb;
 	struct netdev_net_notifier	netdevice_nn;
+
+	struct idr			fte_ids;
+	struct mlx5_tc_ct_priv         *ct;
+	struct mapping_ctx             *chains_mapping;
 };
 
 struct mlx5e_flow_table {
@@ -44,13 +68,9 @@ struct mlx5e_l2_rule {
 struct mlx5e_vlan_table {
 	struct mlx5e_flow_table		ft;
 	DECLARE_BITMAP(active_cvlans, VLAN_N_VID);
-#ifdef HAVE_NETIF_F_HW_VLAN_STAG_RX
 	DECLARE_BITMAP(active_svlans, VLAN_N_VID);
-#endif
 	struct mlx5_flow_handle	*active_cvlans_rule[VLAN_N_VID];
-#ifdef HAVE_NETIF_F_HW_VLAN_STAG_RX
 	struct mlx5_flow_handle	*active_svlans_rule[VLAN_N_VID];
-#endif
 	struct mlx5_flow_handle	*untagged_rule;
 	struct mlx5_flow_handle	*any_cvlan_rule;
 	struct mlx5_flow_handle	*any_svlan_rule;

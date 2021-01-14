@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
 /* Copyright (c) 2020 Mellanox Technologies Inc. All rights reserved. */
 
-#include <net/bonding.h>
 #include <linux/netdevice.h>
 #include <linux/list.h>
-
+#include <net/bonding.h>
+#ifdef HAVE_NET_LAG_H
+#include <net/lag.h>
+#endif
 #include "mlx5_core.h"
 #include "eswitch.h"
 #include "esw/acl/ofld.h"
@@ -183,11 +185,11 @@ void mlx5e_rep_bond_unslave(struct mlx5_eswitch *esw,
 
 static bool mlx5e_rep_is_lag_netdev(struct net_device *netdev)
 {
-	struct mlx5e_priv *priv;
 	struct mlx5e_rep_priv *rpriv;
+	struct mlx5e_priv *priv;
 
 	/* A given netdev is not a representor or not a slave of LAG configuration */
-	if (!mlx5e_eswitch_rep(netdev) || !bond_slave_get_rtnl(netdev))
+	if (!mlx5e_eswitch_rep(netdev) || !netif_is_lag_port(netdev))
 		return false;
 
 	priv = netdev_priv(netdev);
@@ -225,6 +227,11 @@ static void mlx5e_rep_changelowerstate_event(struct net_device *netdev, void *pt
 	rpriv = priv->ppriv;
 	fwd_vport_num = rpriv->rep->vport;
 	lag_dev = netdev_master_upper_dev_get(netdev);
+
+#ifdef HAVE_NET_LAG_PORT_DEV_TXABLE
+	netdev_dbg(netdev, "lag_dev(%s)'s slave vport(%d) is txable(%d)\n",
+		   lag_dev->name, fwd_vport_num, net_lag_port_dev_txable(netdev));
+#endif
 
 #ifdef HAVE_NETDEV_FOR_EACH_LOWER_DEV
 	/* Point everyone's egress acl to the vport of the active representor */

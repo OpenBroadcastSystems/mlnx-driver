@@ -301,7 +301,6 @@ dr_icm_pool_mr_create(struct mlx5dr_icm_pool *pool)
 
 	icm_mr->dmn = pool->dmn;
 
-	/* 2^log_biggest_table * entry-size */
 	icm_mr->dm.length = mlx5dr_icm_pool_chunk_size_to_byte(pool->max_log_chunk_sz,
 							       pool->icm_type);
 
@@ -348,7 +347,8 @@ dr_icm_pool_mr_create(struct mlx5dr_icm_pool *pool)
 	icm_mr->icm_start_addr = icm_mr->dm.addr;
 
 	if (icm_mr->icm_start_addr & (BIT(log_align_base) - 1)) {
-		mlx5dr_err(pool->dmn, "Failed to get aligned ICM memory\n");
+		mlx5dr_err(pool->dmn, "Failed to get Aligned ICM mem (asked: %zu)\n",
+			   log_align_base);
 		goto free_mkey;
 	}
 
@@ -649,16 +649,17 @@ out_unlock:
 void mlx5dr_icm_free_chunk(struct mlx5dr_icm_chunk *chunk)
 {
 	struct mlx5dr_icm_buddy_mem *buddy = chunk->buddy_mem;
+	struct mlx5dr_icm_pool *pool = buddy->pool;
 
 	/* move the memory to the waiting list AKA "hot" */
-	mutex_lock(&buddy->pool->mutex);
+	mutex_lock(&pool->mutex);
 	list_del_init(&chunk->chunk_list);
 	list_add_tail(&chunk->chunk_list, &buddy->hot_list);
 	buddy->hot_memory_size += chunk->byte_size;
 	/* Check if we have chunks that are waiting for sync-ste */
-	if (dr_icm_pool_is_sync_required(buddy->pool))
-		dr_icm_pool_sync_all_buddy_pools(buddy->pool);
-	mutex_unlock(&buddy->pool->mutex);
+	if (dr_icm_pool_is_sync_required(pool))
+		dr_icm_pool_sync_all_buddy_pools(pool);
+	mutex_unlock(&pool->mutex);
 }
 
 struct mlx5dr_icm_pool *mlx5dr_icm_pool_create(struct mlx5dr_domain *dmn,

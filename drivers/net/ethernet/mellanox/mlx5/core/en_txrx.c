@@ -30,11 +30,9 @@
  * SOFTWARE.
  */
 
-#if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
 #include <linux/irq.h>
-#endif
-#include <linux/indirect_call_wrapper.h>
 #include "en.h"
+#include "en/txrx.h"
 #include "en/xdp.h"
 #ifdef HAVE_NDO_XSK_WAKEUP
 #include "en/xsk/rx.h"
@@ -42,7 +40,6 @@
 #include "en/xsk/tx.h"
 #include "en/txrx.h"
 
-#if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
 static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)
 {
 	int current_cpu = smp_processor_id();
@@ -57,7 +54,6 @@ static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)
 #endif
 	return cpumask_test_cpu(current_cpu, aff);
 }
-#endif
 
 static void mlx5e_handle_tx_dim(struct mlx5e_txqsq *sq)
 {
@@ -95,7 +91,7 @@ void mlx5e_trigger_irq(struct mlx5e_icosq *sq)
 	nopwqe = mlx5e_post_nop(wq, sq->sqn, &sq->pc);
 	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, &nopwqe->ctrl);
 }
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 static bool mlx5e_napi_xsk_post(struct mlx5e_xdpsq *xsksq, struct mlx5e_rq *xskrq)
 {
 #ifdef HAVE_NDO_XSK_WAKEUP
@@ -136,17 +132,27 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	struct mlx5e_channel *c = container_of(napi, struct mlx5e_channel,
 					       napi);
 	struct mlx5e_ch_stats *ch_stats = c->stats;
-	struct mlx5e_rq *rq = &c->rq;
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 	struct mlx5e_xdpsq *xsksq = &c->xsksq;
 	struct mlx5e_rq *xskrq = &c->xskrq;
-	bool xsk_open = test_bit(MLX5E_CHANNEL_STATE_XSK, c->state);
+#endif
+	struct mlx5e_rq *rq = &c->rq;
+#ifdef HAVE_XSK_SUPPORT
 	bool aff_change = false;
 	bool busy_xsk = false;
 #endif
 	bool busy = false;
 	int work_done = 0;
+#ifdef HAVE_XSK_SUPPORT
+	bool xsk_open;
+#endif
 	int i;
+
+	rcu_read_lock();
+
+#ifdef HAVE_XSK_SUPPORT
+	xsk_open = test_bit(MLX5E_CHANNEL_STATE_XSK, c->state);
+#endif
 
 	ch_stats->poll++;
 #ifndef HAVE_NAPI_STATE_MISSED
@@ -171,7 +177,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 #endif
 
 	if (likely(budget)) { /* budget=0 means: don't poll rx rings */
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 		if (xsk_open)
 			work_done = mlx5e_poll_rx_cq(&xskrq->cq, budget);
 #endif
@@ -183,10 +189,10 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	}
 
 	mlx5e_poll_ico_cq(&c->icosq.cq);
-#if defined HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS || defined HAVE_KTLS_RX_SUPPORT
+#if defined HAVE_XSK_SUPPORT || defined HAVE_KTLS_RX_SUPPORT
 	if (mlx5e_poll_ico_cq(&c->async_icosq.cq))
 		/* Don't clear the flag if nothing was polled to prevent
-		 * queueing more WQEs and overflowing XSKICOSQ.
+		 * queueing more WQEs and overflowing the async ICOSQ.
 		 */
 		clear_bit(MLX5E_SQ_STATE_PENDING_XSK_TX, &c->async_icosq.state);
 #endif
@@ -195,7 +201,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 				mlx5e_post_rx_mpwqes,
 				mlx5e_post_rx_wqes,
 				rq);
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 	if (xsk_open) {
 		busy |= mlx5e_poll_xdpsq_cq(&xsksq->cq);
 		busy_xsk |= mlx5e_napi_xsk_post(xsksq, xskrq);
@@ -204,32 +210,29 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	busy |= busy_xsk;
 #endif
 
-#if defined(HAVE_IRQ_DESC_GET_IRQ_DATA) && defined(HAVE_IRQ_TO_DESC_EXPORTED)
 	if (busy) {
-		if (likely(mlx5e_channel_no_affinity_change(c)))
-			return budget;
+		if (likely(mlx5e_channel_no_affinity_change(c))) {
+			work_done = budget;
+			goto out;
+		}
 		ch_stats->aff_change++;
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 		aff_change = true;
 #endif
 		if (budget && work_done == budget)
 			work_done--;
 	}
-#else
-	if (busy)
-		return budget;
-#endif
 
-#ifdef HAVE_NAPI_STATE_MISSED 
+#ifdef HAVE_NAPI_STATE_MISSED
 	if (unlikely(!napi_complete_done(napi, work_done)))
-		return work_done;
+		goto out;
 #else
  	napi_complete_done(napi, work_done);
  
- 	/* avoid losing completion event during/after polling cqs */
+	/* avoid losing completion event during/after polling cqs */
 	if (test_bit(MLX5E_CHANNEL_NAPI_SCHED, &c->flags)) {
 		napi_schedule(napi);
-		return work_done;
+		goto out;
 	}
 #endif
 
@@ -249,14 +252,14 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 
 	mlx5e_cq_arm(&rq->cq);
 	mlx5e_cq_arm(&c->icosq.cq);
-#if defined HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS || defined HAVE_KTLS_RX_SUPPORT
+#if defined HAVE_XSK_SUPPORT || defined HAVE_KTLS_RX_SUPPORT
 	mlx5e_cq_arm(&c->async_icosq.cq);
 #endif
 #ifdef HAVE_XDP_REDIRECT
 	mlx5e_cq_arm(&c->xdpsq.cq);
 #endif
 
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 	if (xsk_open) {
 		mlx5e_handle_rx_dim(xskrq);
 		mlx5e_cq_arm(&xsksq->cq);
@@ -269,6 +272,9 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	}
 #endif
 
+out:
+	rcu_read_unlock();
+
 	return work_done;
 }
 
@@ -277,18 +283,17 @@ void mlx5e_completion_event(struct mlx5_core_cq *mcq, struct mlx5_eqe *eqe)
 	struct mlx5e_cq *cq = container_of(mcq, struct mlx5e_cq, mcq);
 
 #ifndef HAVE_NAPI_STATE_MISSED
-	set_bit(MLX5E_CHANNEL_NAPI_SCHED, &cq->channel->flags);
+	set_bit(MLX5E_CHANNEL_NAPI_SCHED, cq->ch_flags);
 #endif
 	napi_schedule(cq->napi);
 	cq->event_ctr++;
-	cq->channel->stats->events++;
+	cq->ch_stats->events++;
 }
 
 void mlx5e_cq_error_event(struct mlx5_core_cq *mcq, enum mlx5_event event)
 {
 	struct mlx5e_cq *cq = container_of(mcq, struct mlx5e_cq, mcq);
-	struct mlx5e_channel *c = cq->channel;
-	struct net_device *netdev = c->netdev;
+	struct net_device *netdev = cq->netdev;
 
 	netdev_err(netdev, "%s: cqn=0x%.6x event=0x%.2x\n",
 		   __func__, mcq->cqn, event);

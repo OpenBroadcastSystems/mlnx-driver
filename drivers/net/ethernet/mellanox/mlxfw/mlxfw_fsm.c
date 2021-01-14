@@ -113,7 +113,7 @@ static int mlxfw_fsm_state_err(struct mlxfw_dev *mlxfw_dev,
 		pr_err("%s: pending reset, err (%d)\n", MLXFW_ERR_PRFX , fsm_state_err);
 #endif
 		break;
-	case MLXFW_FSM_STATE_ERR_OK: /* fall through */
+	case MLXFW_FSM_STATE_ERR_OK:
 	case MLXFW_FSM_STATE_ERR_MAX:
 #ifdef HAVE_NETLINK_EXT_ACK
 		MLXFW_ERR_MSG(mlxfw_dev, extack, "unknown error", err);
@@ -121,7 +121,7 @@ static int mlxfw_fsm_state_err(struct mlxfw_dev *mlxfw_dev,
 		pr_err("%s: unknown error, err (%d)\n", MLXFW_ERR_PRFX , fsm_state_err);
 #endif
 		break;
-	};
+	}
 
 	return mlxfw_fsm_state_errno[fsm_state_err];
 };
@@ -242,7 +242,7 @@ mlxfw_fsm_reactivate_err(struct mlxfw_dev *mlxfw_dev,
 		break;
 	case MLXFW_FSM_REACTIVATE_STATUS_ERR_FW_PROGRAMMING_NEEDED:
 #ifdef HAVE_NETLINK_EXT_ACK
-		MLXFW_REACT_ERR("fw progamming needed", err);
+		MLXFW_REACT_ERR("fw programming needed", err);
 #else 
 		pr_err("%s: fw progamming needed, err (%d)\n", MXFW_REACT_PRFX , err);
 #endif
@@ -254,7 +254,7 @@ mlxfw_fsm_reactivate_err(struct mlxfw_dev *mlxfw_dev,
 		pr_err("%s: fw already activated, err (%d)\n", MXFW_REACT_PRFX , err);
 #endif
 		break;
-	case MLXFW_FSM_REACTIVATE_STATUS_OK: /* fall through */
+	case MLXFW_FSM_REACTIVATE_STATUS_OK:
 	case MLXFW_FSM_REACTIVATE_STATUS_MAX:
 #ifdef HAVE_NETLINK_EXT_ACK
 		MLXFW_REACT_ERR("unexpected error", err);
@@ -262,7 +262,7 @@ mlxfw_fsm_reactivate_err(struct mlxfw_dev *mlxfw_dev,
 		pr_err("%s: unexpected error, err (%d)\n", MXFW_REACT_PRFX , err);
 #endif
 		break;
-	};
+	}
 	return -EREMOTEIO;
 };
 

@@ -1,9 +1,9 @@
-From: Talat Batheesh <talatb@mellanox.com>
+From: Valentine Fatiev <valentinef@mellanox.com>
 Subject: [PATCH] BACKPORT: drivers/infiniband/core/iwpm_util.c
 
-Change-Id: I0a2b35671053dfd06bad7f94565584ed2aee6315
+Change-Id: I944910b7f7fd912b31471fbc417b91c17b96a7ba
 ---
- drivers/infiniband/core/iwpm_util.c | 32 ++++++++++++++++++++++++--------
+ drivers/infiniband/core/iwpm_util.c | 32 +++++++++++++++++++++--------
  1 file changed, 24 insertions(+), 8 deletions(-)
 
 --- a/drivers/infiniband/core/iwpm_util.c
@@ -101,7 +101,7 @@ Change-Id: I0a2b35671053dfd06bad7f94565584ed2aee6315
  				     nlmsg_policy, NULL);
  	if (ret) {
  		err_str = "Unable to parse the nlmsg";
-@@ -688,8 +703,9 @@ int iwpm_send_mapinfo(u8 nl_client, int
+@@ -687,8 +702,9 @@ int iwpm_send_mapinfo(u8 nl_client, int
  	int skb_num = 0, mapping_num = 0;
  	int i = 0, nlmsg_bytes = 0;
  	unsigned long flags;
@@ -112,7 +112,7 @@ Change-Id: I0a2b35671053dfd06bad7f94565584ed2aee6315
  
  	skb = dev_alloc_skb(NLMSG_GOODSIZE);
  	if (!skb) {
-@@ -701,7 +717,7 @@ int iwpm_send_mapinfo(u8 nl_client, int
+@@ -700,7 +716,7 @@ int iwpm_send_mapinfo(u8 nl_client, int
  	spin_lock_irqsave(&iwpm_mapinfo_lock, flags);
  	ret = -EINVAL;
  	for (i = 0; i < IWPM_MAPINFO_HASH_SIZE; i++) {

@@ -92,17 +92,11 @@ static void mlx5i_build_nic_params(struct mlx5_core_dev *mdev,
 void set_lro_features_bit(struct mlx5e_priv *priv)
 {
 	u64 hw_support_lro = 0;
-#ifdef HAVE_NETDEV_HW_FEATURES
 	hw_support_lro = priv->netdev->hw_features & NETIF_F_RXCSUM;
-#else
-	hw_support_lro = priv->netdev->features & NETIF_F_RXCSUM;
-#endif
 	if (hw_support_lro) {
 		priv->netdev->features |= NETIF_F_LRO;
-#ifdef HAVE_NETDEV_HW_FEATURES
 		priv->netdev->hw_features |= NETIF_F_LRO;
 		priv->netdev->wanted_features |= NETIF_F_LRO;
-#endif
 	}
 }
 #endif
@@ -134,7 +128,6 @@ int mlx5i_init(struct mlx5_core_dev *mdev, struct net_device *netdev)
 	mlx5e_timestamp_init(priv);
 
 	/* netdev init */
-#ifdef HAVE_NETDEV_HW_FEATURES
 	netdev->hw_features    |= NETIF_F_SG;
 	netdev->hw_features    |= NETIF_F_IP_CSUM;
 	netdev->hw_features    |= NETIF_F_IPV6_CSUM;
@@ -142,32 +135,13 @@ int mlx5i_init(struct mlx5_core_dev *mdev, struct net_device *netdev)
 	netdev->hw_features    |= NETIF_F_TSO;
 	netdev->hw_features    |= NETIF_F_TSO6;
 	netdev->hw_features    |= NETIF_F_RXCSUM;
-#ifdef HAVE_NETIF_F_RXHASH
 	netdev->hw_features    |= NETIF_F_RXHASH;
-#endif
-#else /* HAVE_NETDEV_HW_FEATURES */
-	netdev->features    |= NETIF_F_SG;
-	netdev->features    |= NETIF_F_IP_CSUM;
-	netdev->features    |= NETIF_F_IPV6_CSUM;
-	netdev->features    |= NETIF_F_GRO;
-	netdev->features    |= NETIF_F_TSO;
-	netdev->features    |= NETIF_F_TSO6;
-	netdev->features    |= NETIF_F_RXCSUM;
-#ifdef HAVE_NETIF_F_RXHASH
-	netdev->features    |= NETIF_F_RXHASH;
-#endif
-#endif /* HAVE_NETDEV_HW_FEATURES */
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
 	set_lro_features_bit(priv);
 #endif
 
 	netdev->netdev_ops = &mlx5i_netdev_ops;
-#ifndef HAVE_ETHTOOL_OPS_EXT
 	netdev->ethtool_ops = &mlx5i_ethtool_ops;
-#else
-	SET_ETHTOOL_OPS(netdev, &mlx5i_ethtool_ops);
-	set_ethtool_ops_ext(netdev, &mlx5i_ethtool_ops_ext);
-#endif
 
 	return 0;
 }
@@ -410,10 +384,8 @@ static int mlx5i_create_flow_steering(struct mlx5e_priv *priv)
 	if (err) {
 		netdev_err(priv->netdev, "Failed to create arfs tables, err=%d\n",
 			   err);
-#ifdef HAVE_NETDEV_HW_FEATURES
 #ifdef CONFIG_RFS_ACCEL
 		priv->netdev->hw_features &= ~NETIF_F_NTUPLE;
-#endif
 #endif
 	}
 
@@ -552,8 +524,7 @@ static const struct mlx5e_profile mlx5i_nic_profile = {
 	.update_rx	   = mlx5i_update_nic_rx,
 	.update_stats	   = NULL, /* mlx5i_update_stats */
 	.update_carrier    = NULL, /* no HW update in IB link */
-	.rx_handlers.handle_rx_cqe       = mlx5i_handle_rx_cqe,
-	.rx_handlers.handle_rx_cqe_mpwqe = NULL, /* Not supported */
+	.rx_handlers       = &mlx5i_rx_handlers,
 	.max_tc		   = MLX5I_MAX_NUM_TC,
 	.rq_groups	   = MLX5E_NUM_RQ_GROUPS(REGULAR),
 	.stats_grps        = mlx5i_stats_grps,

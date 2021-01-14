@@ -7,6 +7,11 @@
  *             Kirti Wankhede <kwankhede@nvidia.com>
  */
 
+#ifndef CONFIG_MLNX_VFIO_MDEV
+#if defined(CONFIG_VFIO_MDEV) || defined(CONFIG_VFIO_MDEV_MODULE)
+#include_next <linux/mdev.h>
+#endif
+#else
 #ifndef MDEV_H
 #define MDEV_H
 
@@ -148,3 +153,4 @@ struct device *mdev_dev(struct mdev_device *mdev);
 struct mdev_device *mdev_from_dev(struct device *dev);
 
 #endif /* MDEV_H */
+#endif /* CONFIG_MLNX_VFIO_MDEV */

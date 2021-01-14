@@ -6,7 +6,7 @@
 #ifndef _RDMA_LAG_H_
 #define _RDMA_LAG_H_
 
-#ifdef HAVE_NET_LAG
+#ifdef HAVE_NET_LAG_H
 #include <net/lag.h>
 #endif
 

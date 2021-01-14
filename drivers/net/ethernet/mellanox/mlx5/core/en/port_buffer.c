@@ -31,7 +31,6 @@
  */
 #include "port_buffer.h"
 
-#ifdef HAVE_IEEE_DCBNL_ETS
 #ifdef CONFIG_MLX5_CORE_EN_DCB
 int mlx5e_port_query_buffer(struct mlx5e_priv *priv,
 			    struct mlx5e_port_buffer *port_buffer)
@@ -369,5 +368,4 @@ int mlx5e_port_manual_buffer_config(struct mlx5e_priv *priv,
 
 	return err;
 }
-#endif
 #endif

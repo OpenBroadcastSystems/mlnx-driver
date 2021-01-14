@@ -316,22 +316,15 @@ static int mlx5i_pkey_init(struct mlx5_core_dev *mdev,
 
 #ifdef CONFIG_COMPAT_LRO_ENABLED_IPOIB
        netdev->features &= ~NETIF_F_LRO;
-#ifdef HAVE_NETDEV_HW_FEATURES
        priv->netdev->hw_features &= ~NETIF_F_LRO;
        priv->netdev->wanted_features &= ~NETIF_F_LRO;
-#endif
 #endif
 
 	/* Override parent ndo */
 	netdev->netdev_ops = &mlx5i_pkey_netdev_ops;
 
 	/* Set child limited ethtool support */
-#ifndef HAVE_ETHTOOL_OPS_EXT
 	netdev->ethtool_ops = &mlx5i_pkey_ethtool_ops;
-#else
-	SET_ETHTOOL_OPS(netdev, &mlx5i_pkey_ethtool_ops);
-	set_ethtool_ops_ext(netdev, &mlx5i_pkey_ethtool_ops_ext);
-#endif
 
 	/* Use dummy rqs */
 	priv->channels.params.log_rq_mtu_frames = MLX5E_PARAMS_MINIMUM_LOG_RQ_SIZE;
@@ -389,8 +382,7 @@ static const struct mlx5e_profile mlx5i_pkey_nic_profile = {
 	.disable	   = NULL,
 	.update_rx	   = mlx5i_update_nic_rx,
 	.update_stats	   = NULL,
-	.rx_handlers.handle_rx_cqe       = mlx5i_handle_rx_cqe,
-	.rx_handlers.handle_rx_cqe_mpwqe = NULL, /* Not supported */
+	.rx_handlers       = &mlx5i_rx_handlers,
 	.max_tc		   = MLX5I_MAX_NUM_TC,
 	.rq_groups	   = MLX5E_NUM_RQ_GROUPS(REGULAR),
 };

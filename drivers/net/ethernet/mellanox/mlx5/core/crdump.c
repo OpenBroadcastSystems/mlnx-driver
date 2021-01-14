@@ -156,20 +156,12 @@ static int mlx5_crdump_open(struct inode *inode, struct file *file)
 {
 	struct seq_file *seq;
 	int ret;
-#ifndef HAVE_PDE_DATA
-	struct proc_dir_entry *pde;
-#endif
 	ret = seq_open(file, &mlx5_crdump_seq_ops);
 	if (ret)
 		return ret;
 
 	seq = file->private_data;
-#ifdef HAVE_PDE_DATA
 	seq->private = PDE_DATA(inode);
-#else
-	pde = PDE(inode);
-	seq->private = pde->data;
-#endif
 	return 0;
 }
 

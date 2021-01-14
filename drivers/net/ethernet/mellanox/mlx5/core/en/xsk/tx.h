@@ -4,13 +4,20 @@
 #ifndef __MLX5_EN_XSK_TX_H__
 #define __MLX5_EN_XSK_TX_H__
 
-#ifdef HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS
+#ifdef HAVE_XSK_SUPPORT
 
 #include "en.h"
 #ifdef HAVE_NDO_XSK_WAKEUP
+#ifdef HAVE_XDP_SOCK_DRV_H
+#include <net/xdp_sock_drv.h>
+#else
 #include <net/xdp_sock.h>
 #endif
+#include <net/xdp_sock.h>
+#endif
+
 /* TX data path */
+
 int mlx5e_xsk_wakeup(struct net_device *dev, u32 qid, u32 flags);
 
 bool mlx5e_xsk_tx(struct mlx5e_xdpsq *sq, unsigned int budget);
@@ -28,5 +35,5 @@ static inline void mlx5e_xsk_update_tx_wakeup(struct mlx5e_xdpsq *sq)
 }
 #endif
 
-#endif /* HAVE_XSK_UMEM_CONSUME_TX_GET_2_PARAMS */
+#endif /* HAVE_XSK_SUPPORT */
 #endif /* __MLX5_EN_XSK_TX_H__ */

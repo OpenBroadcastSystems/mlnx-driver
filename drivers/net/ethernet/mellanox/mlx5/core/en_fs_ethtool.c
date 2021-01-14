@@ -318,7 +318,6 @@ parse_ether(void *headers_c, void *headers_v, struct ethtool_rx_flow_spec *fs)
 	MLX5E_FTE_SET(headers_v, ethertype, ntohs(eth_val->h_proto));
 }
 
-#ifdef HAVE_ETHTOOL_FLOW_EXT_H_DEST
 static void
 set_cvlan(void *headers_c, void *headers_v, __be16 vlan_tci)
 {
@@ -335,7 +334,6 @@ set_dmac(void *headers_c, void *headers_v,
 	ether_addr_copy(MLX5E_FTE_ADDR_OF(headers_c, dmac_47_16), m_dest);
 	ether_addr_copy(MLX5E_FTE_ADDR_OF(headers_v, dmac_47_16), v_dest);
 }
-#endif
 
 static int set_flow_attrs(u32 *match_c, u32 *match_v,
 			  struct ethtool_rx_flow_spec *fs, struct mlx5e_priv *priv)
@@ -384,7 +382,6 @@ static int set_flow_attrs(u32 *match_c, u32 *match_v,
 		return -EINVAL;
 	}
 
-#ifdef HAVE_ETHTOOL_FLOW_EXT_H_DEST
 	if ((fs->flow_type & FLOW_EXT) &&
 	    (fs->m_ext.vlan_tci & cpu_to_be16(VLAN_VID_MASK)))
 		set_cvlan(outer_headers_c, outer_headers_v, fs->h_ext.vlan_tci);
@@ -395,7 +392,6 @@ static int set_flow_attrs(u32 *match_c, u32 *match_v,
 		set_dmac(outer_headers_c, outer_headers_v, fs->m_ext.h_dest,
 			 fs->h_ext.h_dest);
 	}
-#endif
 
 	return 0;
 }
@@ -634,7 +630,6 @@ static int validate_tcpudp6(struct ethtool_rx_flow_spec *fs)
 	return ++ntuples;
 }
 #endif
-#ifdef HAVE_ETHTOOL_FLOW_EXT_H_DEST
 static int validate_vlan(struct ethtool_rx_flow_spec *fs)
 {
 	if (fs->m_ext.vlan_etype ||
@@ -647,7 +642,6 @@ static int validate_vlan(struct ethtool_rx_flow_spec *fs)
 
 	return 1;
 }
-#endif
 static int validate_flow(struct mlx5e_priv *priv,
 			 struct ethtool_rx_flow_spec *fs)
 {
@@ -716,7 +710,6 @@ static int validate_flow(struct mlx5e_priv *priv,
 	default:
 		return -ENOTSUPP;
 	}
-#ifdef HAVE_ETHTOOL_FLOW_EXT_H_DEST
 	if ((fs->flow_type & FLOW_EXT)) {
 		ret = validate_vlan(fs);
 		if (ret < 0)
@@ -727,7 +720,6 @@ static int validate_flow(struct mlx5e_priv *priv,
 	if (fs->flow_type & FLOW_MAC_EXT &&
 	    !is_zero_ether_addr(fs->m_ext.h_dest))
 		num_tuples++;
-#endif
 
 	return num_tuples;
 }
