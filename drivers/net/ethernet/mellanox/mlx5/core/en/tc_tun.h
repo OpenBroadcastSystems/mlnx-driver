@@ -4,6 +4,7 @@
 #ifndef __MLX5_EN_TC_TUNNEL_H__
 #define __MLX5_EN_TC_TUNNEL_H__
 
+#ifdef CONFIG_MLX5_ESWITCH
 #ifdef HAVE_TCF_TUNNEL_INFO
 
 #include <linux/netdevice.h>
@@ -12,6 +13,7 @@
 #include <linux/netlink.h>
 #include "../en.h"
 #include "../en_rep.h"
+#include "../eswitch.h"
 
 enum {
 	MLX5E_TC_TUNNEL_TYPE_UNKNOWN,
@@ -19,6 +21,11 @@ enum {
 	MLX5E_TC_TUNNEL_TYPE_GENEVE,
 	MLX5E_TC_TUNNEL_TYPE_GRETAP,
 	MLX5E_TC_TUNNEL_TYPE_MPLSOUDP,
+};
+
+struct mlx5e_encap_key {
+	const struct ip_tunnel_key *ip_tun_key;
+	struct mlx5e_tc_tunnel     *tc_tunnel;
 };
 
 struct mlx5e_tc_tunnel {
@@ -46,6 +53,8 @@ struct mlx5e_tc_tunnel {
 			    struct flow_cls_offload *f,
 			    void *headers_c,
 			    void *headers_v);
+	int (*cmp_encap_info)(struct mlx5e_encap_key *a,
+			      struct mlx5e_encap_key *b);
 };
 
 /* Helper struct for accessing a struct containing list_head array.
@@ -137,6 +146,9 @@ int mlx5e_tc_tun_parse_udp_ports(struct mlx5e_priv *priv,
 				 void *headers_c,
 				 void *headers_v);
 
+int mlx5e_tc_tun_cmp_encap_info_generic(struct mlx5e_encap_key *a,
+					struct mlx5e_encap_key *b);
+
 void mlx5e_detach_encap(struct mlx5e_priv *priv,
 			struct mlx5e_tc_flow *flow, int out_index);
 
@@ -162,4 +174,5 @@ struct ip_tunnel_info *mlx5e_dup_tun_info(const struct ip_tunnel_info *tun_info)
 int mlx5e_tc_fib_event(struct notifier_block *nb, unsigned long event, void *ptr);
 
 #endif
+#endif /* CONFIG_MLX5_ESWITCH */
 #endif //__MLX5_EN_TC_TUNNEL_H__

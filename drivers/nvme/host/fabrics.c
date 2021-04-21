@@ -589,10 +589,11 @@ blk_status_t nvmf_fail_nonready_command(struct nvme_ctrl *ctrl,
 #endif
 		return BLK_STS_RESOURCE;
 
-	nvme_req(rq)->status = NVME_SC_HOST_PATH_ERROR;
+#ifndef HAVE_MQ_RQ_STATE
 	blk_mq_start_request(rq);
-	nvme_complete_rq(rq);
-	return BLK_STS_OK;
+#endif
+
+	return nvme_host_path_error(rq);
 }
 EXPORT_SYMBOL_GPL(nvmf_fail_nonready_command);
 

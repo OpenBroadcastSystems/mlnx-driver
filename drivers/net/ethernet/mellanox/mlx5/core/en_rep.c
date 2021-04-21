@@ -50,6 +50,7 @@
 #include "fs_core.h"
 #include "ecpf.h"
 #include "lib/mlx5.h"
+#include "en/flow_meter_aso.h"
 #define CREATE_TRACE_POINTS
 #include "diag/en_rep_tracepoint.h"
 #include "en_accel/ipsec.h"
@@ -550,7 +551,7 @@ int mlx5e_rep_get_phys_port_name(struct net_device *dev,
 }
 #endif
 
-bool mlx5e_is_uplink_rep(struct mlx5e_priv *priv)
+bool mlx5e_is_uplink_rep(const struct mlx5e_priv *priv)
 {
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 	struct mlx5_eswitch_rep *rep;
@@ -866,7 +867,9 @@ static void mlx5e_build_rep_netdev(struct net_device *netdev,
 
 	netdev->watchdog_timeo    = 15 * HZ;
 
-	netdev->hw_features    |= NETIF_F_HW_TC;
+#if IS_ENABLED(CONFIG_MLX5_CLS_ACT)
+       netdev->hw_features    |= NETIF_F_HW_TC;
+#endif
 	netdev->hw_features    |= NETIF_F_SG;
 	netdev->hw_features    |= NETIF_F_IP_CSUM;
 	netdev->hw_features    |= NETIF_F_IPV6_CSUM;
@@ -892,6 +895,12 @@ static int mlx5e_init_rep(struct mlx5_core_dev *mdev,
 		if (err)
 			mlx5_core_err(mdev, "Uplink rep IPsec initialization failed, %d\n",
 				      err);
+	}
+
+	if (rpriv->rep->vport == MLX5_VPORT_UPLINK) {
+		err = mlx5e_flow_meters_init(priv);
+		if (err)
+			mlx5_core_err(mdev, "Fail to init flow meters (%d)\n", err);
 	}
 
 	if (rpriv->rep->vport == MLX5_VPORT_UPLINK)
@@ -921,8 +930,14 @@ static void mlx5e_cleanup_rep(struct mlx5e_priv *priv)
 {
 	struct mlx5e_rep_priv *rpriv = priv->ppriv;
 
+	if (!rpriv)
+		return;
+
 	if (rpriv->rep->vport == MLX5_VPORT_UPLINK)
 		mlx5e_ipsec_cleanup(priv);
+
+	if (rpriv->rep->vport == MLX5_VPORT_UPLINK)
+		mlx5e_flow_meters_cleanup(priv);
 }
 
 static int mlx5e_create_rep_ttc_table(struct mlx5e_priv *priv)
@@ -1000,6 +1015,20 @@ static void mlx5e_destroy_rep_root_ft(struct mlx5e_priv *priv)
 	mlx5_destroy_flow_table(rpriv->root_ft);
 }
 
+static struct mlx5_flow_table *mlx5e_get_root_ft(struct mlx5e_priv *priv,
+						 struct mlx5_eswitch *esw)
+{
+	struct mlx5e_rep_priv *rpriv = priv->ppriv;
+	struct mlx5e_rep_priv *uplink_rpriv;
+
+	if (priv->shared_rq) {
+		uplink_rpriv = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
+		return uplink_rpriv->root_ft;
+	}
+
+	return rpriv->root_ft;
+}
+
 static int mlx5e_create_rep_vport_rx_rule(struct mlx5e_priv *priv)
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
@@ -1009,7 +1038,7 @@ static int mlx5e_create_rep_vport_rx_rule(struct mlx5e_priv *priv)
 	struct mlx5_flow_destination dest;
 
 	dest.type = MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE;
-	dest.ft = rpriv->root_ft;
+	dest.ft = mlx5e_get_root_ft(priv, esw);
 
 	flow_rule = mlx5_eswitch_create_vport_rx_rule(esw, rep->vport, &dest);
 	if (IS_ERR(flow_rule))
@@ -1036,7 +1065,18 @@ int mlx5e_rep_bond_update(struct mlx5e_priv *priv, bool cleanup)
 	return cleanup ? 0 : mlx5e_create_rep_vport_rx_rule(priv);
 }
 
-static int mlx5e_init_rep_rx(struct mlx5e_priv *priv)
+static int mlx5e_init_rep_shared_rq(struct mlx5e_priv *priv)
+{
+	int err;
+
+	err = mlx5e_create_rep_vport_rx_rule(priv);
+	if (err)
+		mlx5_core_warn(priv->mdev, "create_rep_vport_rx_rule failed with err %d\n", err);
+
+	return err;
+}
+
+static int mlx5e_init_rep_dedicated_rq(struct mlx5e_priv *priv)
 {
 	struct mlx5_core_dev *mdev = priv->mdev;
 	int err;
@@ -1098,7 +1138,20 @@ err_close_drop_rq:
 	return err;
 }
 
-static void mlx5e_cleanup_rep_rx(struct mlx5e_priv *priv)
+static int mlx5e_init_rep_rx(struct mlx5e_priv *priv)
+{
+	if (mlx5e_is_rep_shared_rq(priv))
+		return mlx5e_init_rep_shared_rq(priv);
+	else
+		return mlx5e_init_rep_dedicated_rq(priv);
+}
+
+static void mlx5e_cleanup_rep_shared_rq(struct mlx5e_priv *priv)
+{
+	rep_vport_rx_rule_destroy(priv);
+}
+
+static void mlx5e_cleanup_rep_dedicated_rq(struct mlx5e_priv *priv)
 {
 	mlx5e_ethtool_cleanup_steering(priv);
 	rep_vport_rx_rule_destroy(priv);
@@ -1109,6 +1162,14 @@ static void mlx5e_cleanup_rep_rx(struct mlx5e_priv *priv)
 	mlx5e_destroy_direct_rqts(priv, priv->direct_tir);
 	mlx5e_destroy_rqt(priv, &priv->indir_rqt);
 	mlx5e_close_drop_rq(&priv->drop_rq);
+}
+
+static void mlx5e_cleanup_rep_rx(struct mlx5e_priv *priv)
+{
+	if (mlx5e_is_rep_shared_rq(priv))
+		return mlx5e_cleanup_rep_shared_rq(priv);
+	else
+		return mlx5e_cleanup_rep_dedicated_rq(priv);
 }
 
 static int mlx5e_init_ul_rep_rx(struct mlx5e_priv *priv)
@@ -1299,8 +1360,9 @@ static void mlx5e_uplink_rep_enable(struct mlx5e_priv *priv)
 
 	mlx5e_rep_tc_enable(priv);
 
-	mlx5_modify_vport_admin_state(mdev, MLX5_VPORT_STATE_OP_MOD_UPLINK,
-				      0, 0, MLX5_VPORT_ADMIN_STATE_AUTO);
+	if (MLX5_CAP_GEN(mdev, uplink_follow))
+		mlx5_modify_vport_admin_state(mdev, MLX5_VPORT_STATE_OP_MOD_UPLINK,
+					      0, 0, MLX5_VPORT_ADMIN_STATE_AUTO);
 	mlx5_lag_add(mdev, netdev , false);
 	priv->events_nb.notifier_call = uplink_rep_async_event;
 	mlx5_notifier_register(mdev, &priv->events_nb);
@@ -1439,11 +1501,21 @@ static int register_devlink_port(struct mlx5_core_dev *dev,
 	struct devlink_port_attrs attrs = {};
 	struct netdev_phys_item_id ppid = {};
 	unsigned int dl_port_index = 0;
+#ifdef HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET_CONTROLLER_NUM
+	struct mlx5_esw_offload *offloads = &dev->priv.eswitch->offloads;
+	u32 controller_num = 0;
+	bool external;
+#endif
 	u16 pfnum;
 
 	if (!is_devlink_port_supported(dev, rpriv))
 		return 0;
 
+#ifdef HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET_CONTROLLER_NUM
+	external = mlx5_core_is_ecpf_esw_manager(dev);
+	if (external)
+		controller_num = offloads->host_number + 1;
+#endif
 	mlx5e_rep_get_port_parent_id(rpriv->netdev, &ppid);
 	dl_port_index = mlx5_esw_vport_to_devlink_port_index(dev, rep->vport);
 	pfnum = PCI_FUNC(dev->pdev->devfn);
@@ -1463,23 +1535,29 @@ static int register_devlink_port(struct mlx5_core_dev *dev,
 	} else if (rep->vport == MLX5_VPORT_PF) {
 		memcpy(rpriv->dl_port.attrs.switch_id.id, &ppid.id[0], ppid.id_len);
 		rpriv->dl_port.attrs.switch_id.id_len = ppid.id_len;
-#ifdef HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET_GET_2_PARAMS
+#if defined(HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET_2_PARAMS)
 		devlink_port_attrs_pci_pf_set(&rpriv->dl_port, pfnum);
-#else
+#elif defined(HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET_4_PARAMS)
 		devlink_port_attrs_pci_pf_set(&rpriv->dl_port,
                                               &ppid.id[0], ppid.id_len,
                                               pfnum);
+#elif defined(HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET_CONTROLLER_NUM)
+		devlink_port_attrs_pci_pf_set(&rpriv->dl_port, controller_num,
+					      pfnum, external);
 #endif
 	} else if (mlx5_eswitch_is_vf_vport(dev->priv.eswitch, rpriv->rep->vport)) {
 		memcpy(rpriv->dl_port.attrs.switch_id.id, &ppid.id[0], ppid.id_len);
 		rpriv->dl_port.attrs.switch_id.id_len = ppid.id_len;
-#ifdef HAVE_DEVLINK_PORT_ATTRS_PCI_VF_SET_GET_3_PARAMS
+#if defined(HAVE_DEVLINK_PORT_ATTRS_PCI_VF_SET_GET_3_PARAMS)
 		devlink_port_attrs_pci_vf_set(&rpriv->dl_port,
 				pfnum, rep->vport - 1);
-#else
+#elif defined(HAVE_DEVLINK_PORT_ATTRS_PCI_VF_SET_GET_5_PARAMS)
 		devlink_port_attrs_pci_vf_set(&rpriv->dl_port,
 				&ppid.id[0], ppid.id_len,
 				pfnum, rep->vport - 1);
+#elif defined(HAVE_DEVLINK_PORT_ATTRS_PCI_VF_SET_GET_CONTROLLER_NUM)
+		devlink_port_attrs_pci_vf_set(&rpriv->dl_port, controller_num,
+					      pfnum, rep->vport - 1, external);
 #endif
 	}
 	return devlink_port_register(devlink, &rpriv->dl_port, dl_port_index);
@@ -1497,6 +1575,45 @@ static void unregister_devlink_port(struct mlx5_core_dev *dev,
 #endif
 }
 
+static int mlx5e_rep_metadata_insert(struct mlx5e_priv *priv, struct mlx5_eswitch_rep *rep)
+{
+	struct mlx5e_rep_priv *rpriv_uplink;
+	struct mlx5_eswitch *esw;
+	u32 vport_metadata;
+	int err;
+
+	esw = priv->mdev->priv.eswitch;
+	if (!mlx5e_esw_offloads_pet_enabled(esw))
+		return 0;
+
+	rpriv_uplink = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
+	vport_metadata = mlx5_eswitch_get_vport_metadata_for_match(esw, rep->vport);
+	err = xa_insert(&rpriv_uplink->vport_rep_map, vport_metadata, rep, GFP_KERNEL);
+	if (err) {
+		esw_warn(esw->dev, "Error %d inserting metadata for vport %d\n", err, rep->vport);
+		goto err;
+	}
+	return 0;
+err:
+	return err;
+}
+
+static void mlx5e_rep_metadata_remove(struct mlx5e_priv *priv, struct mlx5_eswitch_rep *rep)
+{
+	struct mlx5e_rep_priv *rpriv_uplink;
+	struct mlx5_eswitch *esw;
+	u32 vport_metadata;
+
+	esw = priv->mdev->priv.eswitch;
+	if (!mlx5e_esw_offloads_pet_enabled(esw))
+		return;
+
+	rpriv_uplink = mlx5_eswitch_get_uplink_priv(esw, REP_ETH);
+	vport_metadata = mlx5_eswitch_get_vport_metadata_for_match(esw, rep->vport);
+	xa_erase(&rpriv_uplink->vport_rep_map, vport_metadata);
+	synchronize_net();
+}
+
 static int
 mlx5e_vport_uplink_rep_load(struct mlx5_core_dev *dev,
 			    struct mlx5_eswitch_rep *rep)
@@ -1507,10 +1624,17 @@ mlx5e_vport_uplink_rep_load(struct mlx5_core_dev *dev,
 
 	rpriv->netdev = priv->netdev;
 
+	xa_init(&rpriv->vport_rep_map);
+	err = mlx5e_rep_metadata_insert(priv, rep);
+	if (err)
+		return err;
+
+	mlx5e_ipsec_ul_cleanup(priv);
+
 	err = mlx5e_netdev_change_profile(priv, &mlx5e_uplink_rep_profile,
 					  rpriv);
 	if (err)
-		return err;
+		goto err_metadata_insert;
 
 	err = register_devlink_port(dev, rpriv);
 	if (err) {
@@ -1532,6 +1656,8 @@ mlx5e_vport_uplink_rep_load(struct mlx5_core_dev *dev,
 
 err_devlink_port:
 	mlx5e_netdev_attach_nic_profile(priv);
+err_metadata_insert:
+	xa_destroy(&rpriv->vport_rep_map);
 	return err;
 }
 
@@ -1582,6 +1708,11 @@ mlx5e_vport_rep_load(struct mlx5_core_dev *dev, struct mlx5_eswitch_rep *rep)
 	priv = netdev_priv(netdev);
 	priv->profile = profile;
 	priv->ppriv = rpriv;
+	priv->shared_rq = mlx5e_is_rep_shared_rq(priv);
+	err = mlx5e_rep_metadata_insert(netdev_priv(netdev), rep);
+	if (err)
+		return err;
+
 	err = profile->init(dev, netdev);
 	if (err) {
 		netdev_warn(netdev, "rep profile init failed, %d\n", err);
@@ -1652,6 +1783,11 @@ mlx5e_vport_uplink_rep_unload(struct mlx5e_rep_priv *rpriv)
 	ppriv = priv->ppriv;
 	dev = priv->mdev;
 
+	mlx5e_rep_metadata_remove(priv, rpriv->rep);
+	xa_destroy(&rpriv->vport_rep_map);
+
+	mlx5e_ipsec_ul_cleanup(priv);
+
 #ifdef HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET
 	if (is_devlink_port_supported(dev, rpriv))
 		devlink_port_type_clear(&rpriv->dl_port);
@@ -1661,6 +1797,7 @@ mlx5e_vport_uplink_rep_unload(struct mlx5e_rep_priv *rpriv)
 	unregister_devlink_port(dev, rpriv);
 	mlx5e_netdev_attach_nic_profile(priv);
 	kfree(ppriv); /* mlx5e_rep_priv */
+	priv->ppriv = NULL;
 }
 
 static void
@@ -1677,6 +1814,7 @@ mlx5e_vport_rep_unload(struct mlx5_eswitch_rep *rep)
 		return;
 	}
 
+	mlx5e_rep_metadata_remove(priv, rep);
 #ifdef HAVE_DEVLINK_PORT_ATTRS_PCI_PF_SET
 	if (is_devlink_port_supported(dev, rpriv))
 		devlink_port_type_clear(&rpriv->dl_port);

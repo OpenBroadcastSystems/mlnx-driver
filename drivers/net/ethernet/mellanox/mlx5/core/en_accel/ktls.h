@@ -18,7 +18,7 @@ static inline void mlx5e_ktls_build_netdev(struct mlx5e_priv *priv)
 
 #endif
 
-#ifdef HAVE_KTLS_RX_SUPPORT
+#if defined(CONFIG_MLX5_EN_TLS) && defined(HAVE_KTLS_RX_SUPPORT)
 
 int mlx5e_ktls_init_rx(struct mlx5e_priv *priv);
 void mlx5e_ktls_cleanup_rx(struct mlx5e_priv *priv);

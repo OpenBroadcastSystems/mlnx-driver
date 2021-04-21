@@ -287,7 +287,8 @@ static int mlx5_cmd_dr_create_fte(struct mlx5_flow_root_namespace *ns,
 			DR_ACTION_REFORMAT_TYP_TNL_L2_TO_L2;
 
 		tmp_action = mlx5dr_action_create_packet_reformat(domain,
-								  decap_type, 0,
+								  decap_type,
+								  0, 0, 0,
 								  NULL);
 		if (!tmp_action) {
 			err = -ENOMEM;
@@ -533,7 +534,8 @@ out_err:
 
 static int mlx5_cmd_dr_packet_reformat_alloc(struct mlx5_flow_root_namespace *ns,
 					     int reformat_type,
-					     int reformat_param_0,
+					     u8 reformat_param_0,
+					     u8 reformat_param_1,
 					     size_t size,
 					     void *reformat_data,
 					     enum mlx5_flow_namespace_type namespace,
@@ -555,6 +557,9 @@ static int mlx5_cmd_dr_packet_reformat_alloc(struct mlx5_flow_root_namespace *ns
 	case MLX5_REFORMAT_TYPE_L2_TO_L3_TUNNEL:
 		dr_reformat = DR_ACTION_REFORMAT_TYP_L2_TO_TNL_L3;
 		break;
+	case MLX5_REFORMAT_TYPE_INSERT_HDR:
+		dr_reformat = DR_ACTION_REFORMAT_TYP_INSERT_HDR;
+		break;
 	default:
 		mlx5_core_err(ns->dev, "Packet-reformat not supported(%d)\n",
 			      reformat_type);
@@ -563,6 +568,8 @@ static int mlx5_cmd_dr_packet_reformat_alloc(struct mlx5_flow_root_namespace *ns
 
 	action = mlx5dr_action_create_packet_reformat(dr_domain,
 						      dr_reformat,
+						      reformat_param_0,
+						      reformat_param_1,
 						      size,
 						      reformat_data);
 	if (!action) {
@@ -570,6 +577,7 @@ static int mlx5_cmd_dr_packet_reformat_alloc(struct mlx5_flow_root_namespace *ns
 		return -EINVAL;
 	}
 
+	pkt_reformat->sw_owned = true;
 	pkt_reformat->action.dr_action = action;
 
 	return 0;
@@ -600,6 +608,7 @@ static int mlx5_cmd_dr_modify_header_alloc(struct mlx5_flow_root_namespace *ns,
 		return -EINVAL;
 	}
 
+	modify_hdr->sw_owned = true;
 	modify_hdr->action.dr_action = action;
 
 	return 0;
@@ -609,15 +618,6 @@ static void mlx5_cmd_dr_modify_header_dealloc(struct mlx5_flow_root_namespace *n
 					      struct mlx5_modify_hdr *modify_hdr)
 {
 	mlx5dr_action_destroy(modify_hdr->action.dr_action);
-}
-
-static int mlx5_cmd_dr_update_fte(struct mlx5_flow_root_namespace *ns,
-				  struct mlx5_flow_table *ft,
-				  struct mlx5_flow_group *group,
-				  int modify_mask,
-				  struct fs_fte *fte)
-{
-	return -EOPNOTSUPP;
 }
 
 static int mlx5_cmd_dr_delete_fte(struct mlx5_flow_root_namespace *ns,
@@ -642,6 +642,36 @@ static int mlx5_cmd_dr_delete_fte(struct mlx5_flow_root_namespace *ns,
 
 	kfree(rule->dr_actions);
 	return 0;
+}
+
+static int mlx5_cmd_dr_update_fte(struct mlx5_flow_root_namespace *ns,
+				  struct mlx5_flow_table *ft,
+				  struct mlx5_flow_group *group,
+				  int modify_mask,
+				  struct fs_fte *fte)
+{
+	struct fs_fte fte_tmp = {};
+	int ret;
+
+	if (mlx5_dr_is_fw_table(ft->flags))
+		return mlx5_fs_cmd_get_fw_cmds()->update_fte(ns, ft, group, modify_mask, fte);
+
+	/* Backup current dr rule details */
+	fte_tmp.fs_dr_rule = fte->fs_dr_rule;
+	memset(&fte->fs_dr_rule, 0, sizeof(struct mlx5_fs_dr_rule));
+
+	/* First add the new updated rule, then delete the old rule */
+	ret = mlx5_cmd_dr_create_fte(ns, ft, group, fte);
+	if (ret)
+		goto restore_fte;
+
+	ret = mlx5_cmd_dr_delete_fte(ns, ft, &fte_tmp);
+	WARN_ONCE(ret, "dr update fte duplicate rule deletion failed\n");
+	return ret;
+
+restore_fte:
+	fte->fs_dr_rule = fte_tmp.fs_dr_rule;
+	return ret;
 }
 
 static int mlx5_cmd_dr_set_peer(struct mlx5_flow_root_namespace *ns,
@@ -714,4 +744,9 @@ static const struct mlx5_flow_cmds mlx5_flow_cmds_dr = {
 const struct mlx5_flow_cmds *mlx5_fs_cmd_get_dr_cmds(void)
 {
 		return &mlx5_flow_cmds_dr;
+}
+
+u32 mlx5_fs_dr_action_get_pkt_reformat_id(struct mlx5_pkt_reformat *pkt_reformat)
+{
+	return mlx5dr_action_get_pkt_reformat_id(pkt_reformat->action.dr_action);
 }

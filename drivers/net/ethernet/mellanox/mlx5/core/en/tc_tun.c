@@ -47,6 +47,8 @@ static int get_route_and_out_devs(struct mlx5e_priv *priv,
 
 	real_dev = is_vlan_dev(dev) ? vlan_dev_real_dev(dev) : dev;
 	uplink_dev = mlx5_eswitch_uplink_get_proto_dev(esw, REP_ETH);
+	if (!uplink_dev)
+		return -ENODEV;
 
 	rcu_read_lock();
 	uplink_upper = netdev_master_upper_dev_get_rcu(uplink_dev);
@@ -337,7 +339,7 @@ int mlx5e_tc_tun_create_header_ipv4(struct mlx5e_priv *priv,
 		goto release_neigh;
 	}
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev,
-						     e->reformat_type, 0,
+						     e->reformat_type, 0, 0,
 						     ipv4_encap_size, encap_header,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -443,7 +445,7 @@ int mlx5e_tc_tun_update_header_ipv4(struct mlx5e_priv *priv,
 		goto release_neigh;
 	}
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev,
-						     e->reformat_type, 0,
+						     e->reformat_type, 0, 0,
 						     ipv4_encap_size, encap_header,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -608,7 +610,7 @@ int mlx5e_tc_tun_create_header_ipv6(struct mlx5e_priv *priv,
 	}
 
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev,
-						     e->reformat_type, 0,
+						     e->reformat_type, 0, 0,
 						     ipv6_encap_size, encap_header,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -722,7 +724,7 @@ int mlx5e_tc_tun_update_header_ipv6(struct mlx5e_priv *priv,
 	}
 
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev,
-						     e->reformat_type, 0,
+						     e->reformat_type, 0, 0,
 						     ipv6_encap_size, encap_header,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {

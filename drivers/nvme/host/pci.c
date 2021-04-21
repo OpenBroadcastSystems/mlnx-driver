@@ -2728,7 +2728,6 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	int i, vecs;
 #endif
 
-	nr_io_queues = nvme_max_io_queues(dev) + dev->num_p2p_queues;
 	/*
 	 * Sample the module parameters once at reset time so that we have
 	 * stable values to work with.
@@ -2743,8 +2742,9 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	if (dev->ctrl.quirks & NVME_QUIRK_SHARED_TAGS)
 		nr_io_queues = 1;
 	else
-		nr_io_queues = min(nr_io_queues,
+		nr_io_queues = min(nvme_max_io_queues(dev),
 				   dev->nr_allocated_queues - 1);
+	nr_io_queues += dev->num_p2p_queues;
 
 	result = nvme_set_queue_count(&dev->ctrl, &nr_io_queues);
 	if (result < 0)

@@ -570,7 +570,7 @@ int mlxfw_firmware_flash(struct mlxfw_dev *mlxfw_dev,
 #else
 	pr_info("Initialize firmware flash process\n");
 #endif
-#ifdef HAVE_DEVLINK_FLASH_UPDATE_STATUS_NOTIFY
+#ifdef HAVE_DEVLINK_FLASH_UPDATE_BEGIN_NOTIFY_EXPORTED
 	devlink_flash_update_begin_notify(mlxfw_dev->devlink);
 #endif
 	mlxfw_status_notify(mlxfw_dev, "Initializing firmware flash process",
@@ -661,7 +661,7 @@ int mlxfw_firmware_flash(struct mlxfw_dev *mlxfw_dev,
 #endif
 	mlxfw_status_notify(mlxfw_dev, "Firmware flash done", NULL, 0, 0);
 	mlxfw_mfa2_file_fini(mfa2_file);
-#ifdef HAVE_DEVLINK_FLASH_UPDATE_STATUS_NOTIFY
+#ifdef HAVE_DEVLINK_FLASH_UPDATE_BEGIN_NOTIFY_EXPORTED
 	devlink_flash_update_end_notify(mlxfw_dev->devlink);
 #endif
 	return 0;
@@ -675,7 +675,7 @@ err_state_wait_idle_to_locked:
 	mlxfw_dev->ops->fsm_release(mlxfw_dev, fwhandle);
 err_fsm_lock:
 	mlxfw_mfa2_file_fini(mfa2_file);
-#ifdef HAVE_DEVLINK_FLASH_UPDATE_STATUS_NOTIFY
+#ifdef HAVE_DEVLINK_FLASH_UPDATE_BEGIN_NOTIFY_EXPORTED
 	devlink_flash_update_end_notify(mlxfw_dev->devlink);
 #endif
 	return err;

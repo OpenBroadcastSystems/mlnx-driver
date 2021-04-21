@@ -40,7 +40,6 @@
 #include "en/ptp.h"
 #include "ipoib/ipoib.h"
 #include "en_accel/en_accel.h"
-#include "lib/clock.h"
 
 static inline void mlx5e_read_cqe_slot(struct mlx5_cqwq *wq,
 				       u32 cqcc, void *data)
@@ -694,8 +693,6 @@ mlx5e_sq_xmit_wqe(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 			eseg->inline_hdr.sz |= cpu_to_be16(attr->ihs + VLAN_HLEN);
 			mlx5e_insert_vlan(eseg->inline_hdr.start, skb, attr->ihs);
 			stats->added_vlan_packets++;
-			if (skb->encapsulation)
-				mlx5e_eseg_swp_offsets_add_vlan(eseg);
 		} else {
 			eseg->inline_hdr.sz |= cpu_to_be16(attr->ihs);
 			memcpy(eseg->inline_hdr.start, skb->data, attr->ihs);
@@ -883,9 +880,9 @@ void mlx5e_tx_mpwqe_ensure_complete(struct mlx5e_txqsq *sq)
 
 static bool mlx5e_txwqe_build_eseg(struct mlx5e_priv *priv, struct mlx5e_txqsq *sq,
 				   struct sk_buff *skb, struct mlx5e_accel_tx_state *accel,
-				   struct mlx5_wqe_eth_seg *eseg)
+				   struct mlx5_wqe_eth_seg *eseg, u16 ihs)
 {
-	if (unlikely(!mlx5e_accel_tx_eseg(priv, skb, eseg)))
+	if (unlikely(!mlx5e_accel_tx_eseg(priv, skb, eseg, ihs)))
 		return false;
 
 	mlx5e_txwqe_build_eseg_csum(sq, skb, accel, eseg);
@@ -915,7 +912,8 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
 		if (mlx5e_tx_skb_supports_mpwqe(skb, &attr)) {
 			struct mlx5_wqe_eth_seg eseg = {};
 
-			if (unlikely(!mlx5e_txwqe_build_eseg(priv, sq, skb, &accel, &eseg)))
+			if (unlikely(!mlx5e_txwqe_build_eseg(priv, sq, skb, &accel, &eseg,
+							     attr.ihs)))
 				return NETDEV_TX_OK;
 
 #ifdef HAVE_NETDEV_XMIT_MORE
@@ -938,7 +936,7 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* May update the WQE, but may not post other WQEs. */
 	mlx5e_accel_tx_finish(sq, wqe, &accel,
 			      (struct mlx5_wqe_inline_seg *)(wqe->data + wqe_attr.ds_cnt_inl));
-	if (unlikely(!mlx5e_txwqe_build_eseg(priv, sq, skb, &accel, &wqe->eth)))
+	if (unlikely(!mlx5e_txwqe_build_eseg(priv, sq, skb, &accel, &wqe->eth, attr.ihs)))
 		return NETDEV_TX_OK;
 
 #ifdef HAVE_NETDEV_XMIT_MORE
@@ -986,7 +984,7 @@ static void mlx5e_consume_skb(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 		struct skb_shared_hwtstamps hwts = {};
 		u64 ts = get_cqe_ts(cqe);
 
-		hwts.hwtstamp = mlx5_timestamp_to_ns(sq->clock, ts);
+		hwts.hwtstamp = mlx5e_cqe_ts_to_ns(sq->ptp_cyc2time, sq->clock, ts);
 		if (sq->ptpsq)
 			mlx5e_skb_cb_hwtstamp_handler(skb, MLX5E_SKB_CB_CQE_HWTSTAMP,
 						      hwts.hwtstamp, sq->ptpsq->cq_stats);

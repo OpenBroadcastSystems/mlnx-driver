@@ -26,6 +26,7 @@ enum mlx5dr_action_reformat_type {
 	DR_ACTION_REFORMAT_TYP_L2_TO_TNL_L2,
 	DR_ACTION_REFORMAT_TYP_TNL_L3_TO_L2,
 	DR_ACTION_REFORMAT_TYP_L2_TO_TNL_L3,
+	DR_ACTION_REFORMAT_TYP_INSERT_HDR,
 };
 
 struct mlx5dr_match_parameters {
@@ -112,6 +113,8 @@ mlx5dr_action_create_flow_counter(u32 counter_id);
 struct mlx5dr_action *
 mlx5dr_action_create_packet_reformat(struct mlx5dr_domain *dmn,
 				     enum mlx5dr_action_reformat_type reformat_type,
+				     u8 reformat_param_0,
+				     u8 reformat_param_1,
 				     size_t data_sz,
 				     void *data);
 
@@ -125,6 +128,8 @@ struct mlx5dr_action *mlx5dr_action_create_pop_vlan(void);
 
 struct mlx5dr_action *
 mlx5dr_action_create_push_vlan(struct mlx5dr_domain *domain, __be32 vlan_hdr);
+
+u32 mlx5dr_action_get_pkt_reformat_id(struct mlx5dr_action *action);
 
 int mlx5dr_action_destroy(struct mlx5dr_action *action);
 

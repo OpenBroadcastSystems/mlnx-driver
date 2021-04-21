@@ -888,7 +888,8 @@ static int mlx5e_nic_rep_netdevice_event(struct notifier_block *nb,
 	struct net_device *netdev = netdev_notifier_info_to_dev(ptr);
 
 	if (!mlx5e_tc_tun_device_to_offload(priv, netdev) &&
-	    !(is_vlan_dev(netdev) && vlan_dev_real_dev(netdev) == rpriv->netdev))
+	    !(is_vlan_dev(netdev) && vlan_dev_real_dev(netdev) == rpriv->netdev) &&
+	    !netif_is_ovs_master(netdev))
 		return NOTIFY_OK;
 
 	switch (event) {
@@ -1040,50 +1041,44 @@ static bool mlx5e_restore_tunnel(struct mlx5e_priv *priv, struct sk_buff *skb,
 #endif /* CONFIG_NET_TC_SKB_EXT || CONFIG_MLX5_TC_SAMPLE */
 
 static bool mlx5e_handle_int_port(struct mlx5_cqe64 *cqe,
-				  struct sk_buff *skb)
+				  struct sk_buff *skb,
+				  struct mlx5_mapped_obj *mapped_obj)
 {
 	struct mlx5e_priv *priv = netdev_priv(skb->dev);
 	struct mlx5_esw_int_vport *int_vport;
-	struct mlx5_mapped_obj mapped_obj;
-	u32 int_vport_metadata, reg_c0;
 	struct net_device *netdev;
 	struct mlx5_eswitch *esw;
-	int err;
-
-	reg_c0 = (be32_to_cpu(cqe->sop_drop_qpn) &
-		  MLX5E_TC_FLOW_ID_MASK);
-
-	if (!reg_c0)
-		return false;
+	u32 int_vport_metadata;
+	int type, err, ifindex;
 
 	esw = priv->mdev->priv.eswitch;
-	err = mlx5_get_mapped_object(esw_chains(esw), reg_c0, &mapped_obj);
-	if (err) {
-		netdev_dbg(priv->netdev,
-			   "Couldn't find chain for chain tag: %d, err: %d\n",
-			   reg_c0, err);
-		return false;
-	}
+	int_vport_metadata = mapped_obj->int_vport_metadata;
 
-	if (mapped_obj.type == MLX5_MAPPED_OBJ_INT_VPORT_METADATA) {
-		int_vport_metadata = mapped_obj.int_vport_metadata;
-	} else {
-		netdev_dbg(priv->netdev, "Type (%d) is not ovs internal port\n", mapped_obj.type);
-		return false;
-	}
-
+	rcu_read_lock();
 	int_vport = mlx5_esw_get_int_vport_from_metadata(esw, int_vport_metadata);
 	if (IS_ERR_OR_NULL(int_vport)) {
+		rcu_read_unlock();
 		mlx5_core_dbg(priv->mdev, "Unable to find a valid int port with metadata 0x%.8x\n",
 			      int_vport_metadata);
 		return false;
 	}
 
-	netdev = int_vport->netdev;
+	type = int_vport->type;
+	ifindex = int_vport->ifindex;
+	rcu_read_unlock();
+
+	netdev = dev_get_by_index(&init_net, ifindex);
+	if (!netdev) {
+		netdev_warn(priv->netdev,
+			   "Couldn't find tunnel device with ifindex: %d\n",
+			   ifindex);
+		return false;
+	}
+
 	skb->skb_iif = netdev->ifindex;
 	skb->dev = netdev;
 
-	if (int_vport->type) {
+	if (type) {
 		skb_push_rcsum(skb, skb->mac_len);
 #ifdef HAVE_SKB_SET_REDIRECTED
 		skb_set_redirected(skb, false);
@@ -1093,23 +1088,23 @@ static bool mlx5e_handle_int_port(struct mlx5_cqe64 *cqe,
 		skb->pkt_type = PACKET_HOST;
 #ifdef HAVE_SKB_SET_REDIRECTED
 		skb_set_redirected(skb, true);
-#endif
+#endif	
 		err = netif_receive_skb(skb);
 	}
 
-	mlx5_esw_put_int_vport(esw, int_vport);
+	if (err)
+		netdev_dbg(priv->netdev, "failed to fwd packet to int port, err %d, intf %s, type %d\n",
+			   err, netdev->name, type);
 
-	if (err) {
-		netdev_warn(priv->netdev, "failed to fwd packet to int port, err %d, intf %s, type %d\n",
-			    err, netdev->name, int_vport->type);
-	}
+	dev_put(netdev);
 
 	return true;
 }
 
 bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 			     struct sk_buff *skb,
-			     struct mlx5e_tc_update_priv *tc_priv)
+			     struct mlx5e_tc_update_priv *tc_priv,
+			     bool *free_skb)
 {
 	struct mlx5_mapped_obj mapped_obj;
 	u32 chain = 0, reg_c0, reg_c1;
@@ -1117,6 +1112,8 @@ bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 	struct mlx5e_priv *priv;
 	u32 tunnel_id;
 	int err;
+
+	*free_skb = false;
 
 	reg_c0 = (be32_to_cpu(cqe->sop_drop_qpn) & MLX5E_TC_FLOW_ID_MASK);
 	if (reg_c0 == MLX5_FS_DEFAULT_FLOW_TAG)
@@ -1135,7 +1132,7 @@ bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 		netdev_dbg(priv->netdev,
 			   "Couldn't find chain for chain tag: %d, err: %d\n",
 			   reg_c0, err);
-		return false;
+		goto out_free_skb;
 	}
 
 	if (mapped_obj.type == MLX5_MAPPED_OBJ_CHAIN) {
@@ -1161,14 +1158,21 @@ bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 		return false;
 #endif /* CONFIG_MLX5_TC_SAMPLE */
 	} else if (mapped_obj.type == MLX5_MAPPED_OBJ_INT_VPORT_METADATA) {
-		if (mlx5e_handle_int_port(cqe, skb))
-			return false;
+		if (!tunnel_id) {
+			if (mlx5e_handle_int_port(cqe, skb, &mapped_obj))
+				return false;
+			else
+				goto out_free_skb;
+		}
 	} else {
 		netdev_dbg(priv->netdev, "Invalid mapped object type: %d\n", mapped_obj.type);
-		return false;
+		goto out_free_skb;
 	}
 
-#if IS_ENABLED(CONFIG_NET_TC_SKB_EXT)
+
+#if !IS_ENABLED(CONFIG_NET_TC_SKB_EXT)
+	return true;
+#else
 	if (chain) {
 		struct mlx5_rep_uplink_priv *uplink_priv;
 		struct mlx5e_rep_priv *uplink_rpriv;
@@ -1192,14 +1196,16 @@ bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 			goto out_incr_rx_counter;
 	}
 
-	return mlx5e_restore_tunnel(priv, skb, tc_priv, tunnel_id);
+	if (mlx5e_restore_tunnel(priv, skb, tc_priv, tunnel_id))
+		return true;
 
 out_incr_rx_counter:
 	atomic_inc(&esw->dev->priv.ct_debugfs->stats.rx_dropped);
-	return false;
 #endif /* CONFIG_NET_TC_SKB_EXT */
 
-	return true;
+out_free_skb:
+	*free_skb = true;
+	return false;
 }
 
 void mlx5_rep_tc_post_napi_receive(struct mlx5e_tc_update_priv *tc_priv)

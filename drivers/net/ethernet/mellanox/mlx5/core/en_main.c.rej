@@ -1,0 +1,53 @@
+--- drivers/net/ethernet/mellanox/mlx5/core/en_main.c
++++ drivers/net/ethernet/mellanox/mlx5/core/en_main.c
+@@ -69,6 +69,16 @@
+ #include "lib/mlx5.h"
+ #include "en_accel/ipsec_steering.h"
+ 
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++/*
++ * mlx5_netmap_linux.h contains functions for netmap support
++ * that extend the standard driver.
++ */
++#define NETMAP_MLX5_MAIN
++#define DEV_NETMAP
++#include "mlx5_netmap_linux.h"
++#endif
++
+ struct mlx5e_rq_param {
+ 	u32			rqc[MLX5_ST_SZ_DW(rqc)];
+ 	struct mlx5_wq_param	wq;
+@@ -3568,6 +3617,10 @@ int mlx5e_close_locked(struct net_device *netdev)
+ 
+ 	clear_bit(MLX5E_STATE_OPENED, &priv->state);
+ 
++#ifdef DEV_NETMAP
++	netmap_disable_all_rings(netdev);
++#endif
++
+ 	if (MLX5E_GET_PFLAG(&priv->channels.params, MLX5E_PFLAG_SNIFFER)) {
+ 		mlx5e_sniffer_stop(priv);
+ 		MLX5E_SET_PFLAG(&priv->channels.params, MLX5E_PFLAG_SNIFFER, 0);
+@@ -6595,6 +6648,10 @@ void mlx5e_destroy_netdev(struct mlx5e_priv *priv)
+ 	const struct mlx5e_profile *profile = priv->profile;
+ 	struct net_device *netdev = priv->netdev;
+ 
++#ifdef DEV_NETMAP
++	netmap_detach(netdev);
++#endif /* DEV_NETMAP */
++
+ 	if (profile->cleanup)
+ 		profile->cleanup(priv);
+ 	free_netdev(netdev);
+@@ -6714,6 +6771,11 @@ static void *mlx5e_add(struct mlx5_core_dev *mdev)
+ 	mlx5e_dcbnl_init_app(priv);
+ #endif
+ #endif
++
++#ifdef DEV_NETMAP
++	mlx5e_netmap_attach(priv);
++#endif /* DEV_NETMAP */
++
+ 	return priv;
+ 
+ err_unregister_netdev:

@@ -12,11 +12,6 @@
 #include "en.h"
 #endif
 
-#define MLX5_CT_STATE_ESTABLISHED_BIT BIT(1)
-#define MLX5_CT_STATE_TRK_BIT BIT(2)
-#define MLX5_CT_STATE_NAT_BIT BIT(3)
-#define MLX5_CT_STATE_NEW_BIT BIT(4)
-
 struct mlx5_flow_attr;
 struct mlx5e_tc_mod_hdr_acts;
 struct mlx5_rep_uplink_priv;
@@ -28,6 +23,8 @@ struct mlx5_tc_ct_priv;
 struct mlx5_ct_flow;
 
 struct nf_flowtable;
+struct flow_action_entry;
+struct netlink_ext_ack;
 
 struct mlx5_ct_attr {
 	u16 zone;
@@ -35,7 +32,6 @@ struct mlx5_ct_attr {
 	struct mlx5_ct_flow *ct_flow;
 	struct nf_flowtable *nf_ft;
 	u32 ct_labels_id;
-	u32 ct_state;
 };
 
 #define zone_to_reg_ct {\
@@ -140,6 +136,11 @@ bool
 mlx5e_tc_ct_restore_flow(struct mlx5_tc_ct_priv *ct_priv,
 			 struct sk_buff *skb, u8 zone_restore_id);
 
+u32
+mlx5_tc_ct_max_offloaded_conns_get(struct mlx5_core_dev *dev);
+void
+mlx5_tc_ct_max_offloaded_conns_set(struct mlx5_core_dev *dev, u32 max);
+
 #else /* CONFIG_MLX5_TC_CT */
 
 static inline struct mlx5_tc_ct_priv *
@@ -212,6 +213,17 @@ mlx5e_tc_ct_restore_flow(struct mlx5_tc_ct_priv *ct_priv,
 		return true;
 
 	return false;
+}
+
+static inline u32
+mlx5_tc_ct_max_offloaded_conns_get(struct mlx5_core_dev *dev)
+{
+	return 0;
+}
+
+static inline void
+mlx5_tc_ct_max_offloaded_conns_set(struct mlx5_core_dev *dev, u32 max)
+{
 }
 
 #endif /* !IS_ENABLED(CONFIG_MLX5_TC_CT) */

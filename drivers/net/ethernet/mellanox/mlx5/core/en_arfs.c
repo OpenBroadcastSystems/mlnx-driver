@@ -123,7 +123,7 @@ int mlx5e_arfs_enable(struct mlx5e_priv *priv)
 
 	dest.type = MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE;
 	for (i = 0; i < ARFS_NUM_TYPES; i++) {
-		dest.ft = priv->fs.arfs.arfs_tables[i].ft.t;
+		dest.ft = priv->fs.arfs->arfs_tables[i].ft.t;
 		/* Modify ttc rules destination to point on the aRFS FTs */
 		err = mlx5e_ttc_fwd_dest(priv, arfs_get_tt(i), &dest);
 		if (err) {
@@ -143,25 +143,31 @@ static void arfs_destroy_table(struct arfs_table *arfs_t)
 	mlx5e_destroy_flow_table(&arfs_t->ft);
 }
 
-void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv)
+static void _mlx5e_cleanup_tables(struct mlx5e_priv *priv)
 {
 	int i;
 
+	arfs_del_rules(priv);
+	destroy_workqueue(priv->fs.arfs->wq);
+	for (i = 0; i < ARFS_NUM_TYPES; i++) {
+		if (!IS_ERR_OR_NULL(priv->fs.arfs->arfs_tables[i].ft.t))
+			arfs_destroy_table(&priv->fs.arfs->arfs_tables[i]);
+	}
+}
+
+void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv)
+{
 	if (!(priv->netdev->hw_features & NETIF_F_NTUPLE))
 		return;
 
-	arfs_del_rules(priv);
-	destroy_workqueue(priv->fs.arfs.wq);
-	for (i = 0; i < ARFS_NUM_TYPES; i++) {
-		if (!IS_ERR_OR_NULL(priv->fs.arfs.arfs_tables[i].ft.t))
-			arfs_destroy_table(&priv->fs.arfs.arfs_tables[i]);
-	}
+	_mlx5e_cleanup_tables(priv);
+	kfree(priv->fs.arfs);
 }
 
 static int arfs_add_default_rule(struct mlx5e_priv *priv,
 				 enum arfs_type type)
 {
-	struct arfs_table *arfs_t = &priv->fs.arfs.arfs_tables[type];
+	struct arfs_table *arfs_t = &priv->fs.arfs->arfs_tables[type];
 	struct mlx5e_tir *tir = priv->indir_tir;
 	struct mlx5_flow_destination dest = {};
 	MLX5_DECLARE_FLOW_ACT(flow_act);
@@ -292,7 +298,7 @@ out:
 static int arfs_create_table(struct mlx5e_priv *priv,
 			     enum arfs_type type)
 {
-	struct mlx5e_arfs_tables *arfs = &priv->fs.arfs;
+	struct mlx5e_arfs_tables *arfs = priv->fs.arfs;
 	struct mlx5e_flow_table *ft = &arfs->arfs_tables[type].ft;
 	struct mlx5_flow_table_attr ft_attr = {};
 	int err;
@@ -332,20 +338,27 @@ int mlx5e_arfs_create_tables(struct mlx5e_priv *priv)
 	if (!(priv->netdev->hw_features & NETIF_F_NTUPLE))
 		return 0;
 
-	spin_lock_init(&priv->fs.arfs.arfs_lock);
-	INIT_LIST_HEAD(&priv->fs.arfs.rules);
-	priv->fs.arfs.wq = create_singlethread_workqueue("mlx5e_arfs");
-	if (!priv->fs.arfs.wq)
+	priv->fs.arfs = kzalloc(sizeof(*priv->fs.arfs), GFP_KERNEL);
+	if (!priv->fs.arfs)
 		return -ENOMEM;
+
+	spin_lock_init(&priv->fs.arfs->arfs_lock);
+	INIT_LIST_HEAD(&priv->fs.arfs->rules);
+	priv->fs.arfs->wq = create_singlethread_workqueue("mlx5e_arfs");
+	if (!priv->fs.arfs->wq)
+		goto err;
 
 	for (i = 0; i < ARFS_NUM_TYPES; i++) {
 		err = arfs_create_table(priv, i);
 		if (err)
-			goto err;
+			goto err_des;
 	}
 	return 0;
+
+err_des:
+	_mlx5e_cleanup_tables(priv);
 err:
-	mlx5e_arfs_destroy_tables(priv);
+	kfree(priv->fs.arfs);
 	return err;
 }
 
@@ -362,8 +375,8 @@ static void arfs_may_expire_flow(struct mlx5e_priv *priv)
 	HLIST_HEAD(del_list);
 	COMPAT_HL_NODE
 
-	spin_lock_bh(&priv->fs.arfs.arfs_lock);
-	mlx5e_for_each_arfs_rule(arfs_rule, htmp, priv->fs.arfs.arfs_tables, i, j) {
+	spin_lock_bh(&priv->fs.arfs->arfs_lock);
+	mlx5e_for_each_arfs_rule(arfs_rule, htmp, priv->fs.arfs->arfs_tables, i, j) {
 		if (!work_pending(&arfs_rule->arfs_work) &&
 		    rps_may_expire_flow(priv->netdev,
 					arfs_rule->rxq, arfs_rule->flow_id,
@@ -374,7 +387,7 @@ static void arfs_may_expire_flow(struct mlx5e_priv *priv)
 				break;
 		}
 	}
-	spin_unlock_bh(&priv->fs.arfs.arfs_lock);
+	spin_unlock_bh(&priv->fs.arfs->arfs_lock);
 	compat_hlist_for_each_entry_safe(arfs_rule, htmp, &del_list, hlist) {
 		if (arfs_rule->rule)
 			mlx5_del_flow_rules(arfs_rule->rule);
@@ -393,12 +406,12 @@ static void arfs_del_rules(struct mlx5e_priv *priv)
 	HLIST_HEAD(del_list);
 	COMPAT_HL_NODE
 
-	spin_lock_bh(&priv->fs.arfs.arfs_lock);
-	mlx5e_for_each_arfs_rule(rule, htmp, priv->fs.arfs.arfs_tables, i, j) {
+	spin_lock_bh(&priv->fs.arfs->arfs_lock);
+	mlx5e_for_each_arfs_rule(rule, htmp, priv->fs.arfs->arfs_tables, i, j) {
 		hlist_del_init(&rule->hlist);
 		hlist_add_head(&rule->hlist, &del_list);
 	}
-	spin_unlock_bh(&priv->fs.arfs.arfs_lock);
+	spin_unlock_bh(&priv->fs.arfs->arfs_lock);
 
 	compat_hlist_for_each_entry_safe(rule, htmp, &del_list, hlist) {
 		cancel_work_sync(&rule->arfs_work);
@@ -442,7 +455,7 @@ static struct arfs_table *arfs_get_table(struct mlx5e_arfs_tables *arfs,
 static struct mlx5_flow_handle *arfs_add_rule(struct mlx5e_priv *priv,
 					      struct arfs_rule *arfs_rule)
 {
-	struct mlx5e_arfs_tables *arfs = &priv->fs.arfs;
+	struct mlx5e_arfs_tables *arfs = priv->fs.arfs;
 	struct arfs_tuple *tuple = &arfs_rule->tuple;
 	struct mlx5_flow_handle *rule = NULL;
 	struct mlx5_flow_destination dest = {};
@@ -560,9 +573,9 @@ static void arfs_handle_work(struct work_struct *work)
 
 	mutex_lock(&priv->state_lock);
 	if (!test_bit(MLX5E_STATE_OPENED, &priv->state)) {
-		spin_lock_bh(&priv->fs.arfs.arfs_lock);
+		spin_lock_bh(&priv->fs.arfs->arfs_lock);
 		hlist_del(&arfs_rule->hlist);
-		spin_unlock_bh(&priv->fs.arfs.arfs_lock);
+		spin_unlock_bh(&priv->fs.arfs->arfs_lock);
 
 		mutex_unlock(&priv->state_lock);
 		kfree(arfs_rule);
@@ -615,7 +628,7 @@ static struct arfs_rule *arfs_alloc_rule(struct mlx5e_priv *priv,
 	tuple->dst_port = fk->ports.dst;
 
 	rule->flow_id = flow_id;
-	rule->filter_id = priv->fs.arfs.last_filter_id++ % RPS_NO_FILTER;
+	rule->filter_id = priv->fs.arfs->last_filter_id++ % RPS_NO_FILTER;
 
 	hlist_add_head(&rule->hlist,
 		       arfs_hash_bucket(arfs_t, tuple->src_port,
@@ -660,7 +673,7 @@ int mlx5e_rx_flow_steer(struct net_device *dev, const struct sk_buff *skb,
 			u16 rxq_index, u32 flow_id)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
-	struct mlx5e_arfs_tables *arfs = &priv->fs.arfs;
+	struct mlx5e_arfs_tables *arfs = priv->fs.arfs;
 	struct arfs_table *arfs_t;
 	struct arfs_rule *arfs_rule;
 	struct flow_keys fk;
@@ -697,7 +710,7 @@ int mlx5e_rx_flow_steer(struct net_device *dev, const struct sk_buff *skb,
 			return -ENOMEM;
 		}
 	}
-	queue_work(priv->fs.arfs.wq, &arfs_rule->arfs_work);
+	queue_work(priv->fs.arfs->wq, &arfs_rule->arfs_work);
 	spin_unlock_bh(&arfs->arfs_lock);
 	return arfs_rule->filter_id;
 }

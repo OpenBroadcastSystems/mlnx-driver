@@ -43,16 +43,8 @@
 static inline bool mlx5e_channel_no_affinity_change(struct mlx5e_channel *c)
 {
 	int current_cpu = smp_processor_id();
-	const struct cpumask *aff;
-#ifndef HAVE_IRQ_DATA_AFFINITY
-	struct irq_data *idata;
 
-	idata = irq_desc_get_irq_data(c->irq_desc);
-	aff = irq_data_get_affinity_mask(idata);
-#else
-	aff = irq_desc_get_irq_data(c->irq_desc)->affinity;
-#endif
-	return cpumask_test_cpu(current_cpu, aff);
+	return cpumask_test_cpu(current_cpu, c->aff_mask);
 }
 
 static void mlx5e_handle_tx_dim(struct mlx5e_txqsq *sq)
@@ -75,6 +67,13 @@ static void mlx5e_handle_rx_dim(struct mlx5e_rq *rq)
 
 	dim_update_sample(rq->cq.event_ctr, sample->pkt_ctr, sample->byte_ctr, sample);
 	net_dim(&rq->dim_obj.dim, *sample);
+}
+
+static void mlx5e_rx_dim_cq_rearm(struct mlx5e_priv *priv, struct mlx5e_rq *rq)
+{
+	mlx5e_handle_rx_dim(rq);
+	if (test_bit(MLX5E_RQ_STATE_ENABLED, &rq->state))
+		mlx5e_cq_arm(&rq->cq);
 }
 
 void mlx5e_trigger_irq(struct mlx5e_icosq *sq)
@@ -115,7 +114,6 @@ static bool mlx5e_napi_xsk_post(struct mlx5e_xdpsq *xsksq, struct mlx5e_rq *xskr
 					   mlx5e_post_rx_wqes,
 					   xskrq);
 	busy_xsk |= mlx5e_xsk_update_rx_wakeup(xskrq, xsk_rx_alloc_err);
-
 #else
 	bool busy_xsk = false;
 
@@ -248,9 +246,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 		mlx5e_cq_arm(&c->special_sq[i].cq);
 #endif
 
-	mlx5e_handle_rx_dim(rq);
-
-	mlx5e_cq_arm(&rq->cq);
+	mlx5e_rx_dim_cq_rearm(c->priv, rq);
 	mlx5e_cq_arm(&c->icosq.cq);
 #if defined HAVE_XSK_SUPPORT || defined HAVE_KTLS_RX_SUPPORT
 	mlx5e_cq_arm(&c->async_icosq.cq);
@@ -258,12 +254,11 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 #ifdef HAVE_XDP_REDIRECT
 	mlx5e_cq_arm(&c->xdpsq.cq);
 #endif
-
+ 
 #ifdef HAVE_XSK_SUPPORT
 	if (xsk_open) {
-		mlx5e_handle_rx_dim(xskrq);
+		mlx5e_rx_dim_cq_rearm(c->priv, xskrq);
 		mlx5e_cq_arm(&xsksq->cq);
-		mlx5e_cq_arm(&xskrq->cq);
 	}
 
 	if (unlikely(aff_change && busy_xsk)) {

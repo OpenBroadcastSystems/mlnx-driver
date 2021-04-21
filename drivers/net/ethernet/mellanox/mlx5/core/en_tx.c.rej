@@ -1,0 +1,25 @@
+--- drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
++++ drivers/net/ethernet/mellanox/mlx5/core/en_tx.c
+@@ -858,14 +871,16 @@ void mlx5e_free_txqsq_descs(struct mlx5e_txqsq *sq)
+ 			continue;
+ 		}
+ 
+-		for (i = 0; i < wi->num_dma; i++) {
+-			struct mlx5e_sq_dma *dma =
+-				mlx5e_dma_get(sq, dma_fifo_cc++);
++		if (!nm_netmap_on(NA(sq->txq->dev))) {
++			/* do not free skbs in netmap mode */
++			for (i = 0; i < wi->num_dma; i++) {
++				struct mlx5e_sq_dma *dma =
++					mlx5e_dma_get(sq, sq->dma_fifo_cc++);
+ 
+-			mlx5e_tx_dma_unmap(sq->pdev, dma);
++				mlx5e_tx_dma_unmap(sq->pdev, dma);
++			}
++			dev_kfree_skb_any(skb);
+ 		}
+-
+-		dev_kfree_skb_any(skb);
+ 		sqcc += wi->num_wqebbs;
+ 	}
+ 

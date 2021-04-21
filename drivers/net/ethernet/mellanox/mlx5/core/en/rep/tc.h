@@ -51,11 +51,12 @@ int mlx5e_rep_setup_tc(struct net_device *dev, u32 handle,
 #ifndef HAVE_FLOW_INDR_DEV_REGISTER
 void mlx5e_rep_indr_clean_block_privs(struct mlx5e_rep_priv *rpriv);
 #endif
+
 bool mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 			     struct sk_buff *skb,
-			     struct mlx5e_tc_update_priv *tc_priv);
+			     struct mlx5e_tc_update_priv *tc_priv,
+			     bool *free_skb);
 void mlx5_rep_tc_post_napi_receive(struct mlx5e_tc_update_priv *tc_priv);
-
 #ifdef HAVE_TC_SETUP_CB_EGDEV_REGISTER
 #ifdef HAVE_TC_BLOCK_OFFLOAD
 int mlx5e_rep_setup_tc_cb_egdev(enum tc_setup_type type, void *type_data,
@@ -114,7 +115,8 @@ struct mlx5e_tc_update_priv;
 static inline bool
 mlx5e_rep_tc_update_skb(struct mlx5_cqe64 *cqe,
 			struct sk_buff *skb,
-			struct mlx5e_tc_update_priv *tc_priv) { return true; }
+			struct mlx5e_tc_update_priv *tc_priv,
+			bool *free_skb) { return true; }
 static inline void
 mlx5_rep_tc_post_napi_receive(struct mlx5e_tc_update_priv *tc_priv) {}
 

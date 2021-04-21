@@ -129,8 +129,9 @@ struct mlx5dr_ste_ctx {
 	mlx5dr_ste_builder_void_init build_eth_ipv6_l3_l4_init;
 	mlx5dr_ste_builder_void_init build_mpls_init;
 	mlx5dr_ste_builder_void_init build_tnl_gre_init;
-	mlx5dr_ste_builder_void_init build_tnl_mpls_init;
-	mlx5dr_ste_builder_int_init  build_icmp_init;
+	mlx5dr_ste_builder_void_init build_tnl_mpls_over_gre_init;
+	mlx5dr_ste_builder_void_init build_tnl_mpls_over_udp_init;
+	mlx5dr_ste_builder_void_init build_icmp_init;
 	mlx5dr_ste_builder_void_init build_general_purpose_init;
 	mlx5dr_ste_builder_void_init build_eth_l4_misc_init;
 	mlx5dr_ste_builder_void_init build_tnl_vxlan_gpe_init;
@@ -154,6 +155,7 @@ struct mlx5dr_ste_ctx {
 	u16 (*get_byte_mask)(u8 *hw_ste_p);
 
 	/* Actions */
+	u32 actions_caps;
 	void (*set_actions_rx)(struct mlx5dr_domain *dmn,
 			       u8 *action_type_set,
 			       u8 *hw_ste_arr,

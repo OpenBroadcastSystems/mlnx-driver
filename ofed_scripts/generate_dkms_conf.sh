@@ -53,7 +53,7 @@ do
 	let i++
 done
 
-EXTRA_OPTIONS="--with-innova-ipsec --with-mlx5-ipsec --with-gds --without-gds"
+EXTRA_OPTIONS="--with-mlx5-ipsec --with-gds --without-gds"
 for option in $EXTRA_OPTIONS; do
 	if echo "$configure_options" | grep -q -- "$option"; then
 		echo "#:# ExtraOption $option"
